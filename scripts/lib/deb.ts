@@ -60,7 +60,10 @@ export function parseControlFields(text: string): Record<string, string> {
     if (rawLine === "") continue;
     if (/^[ \t]/.test(rawLine)) {
       if (currentKey === null) continue; // stray continuation before any field; ignore
-      const cont = rawLine.slice(1);
+      // Real fpm-produced control files indent continuation lines with two spaces (not the
+      // single space of the strict RFC2822 fold rule), so strip all leading whitespace, not
+      // just one character.
+      const cont = rawLine.replace(/^[ \t]+/, "");
       out[currentKey] += `\n${cont === "." ? "" : cont}`;
       continue;
     }
