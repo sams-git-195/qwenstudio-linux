@@ -1,0 +1,59 @@
+diff --git a/out/main/index.js b/out/main/index.js
+index 58a0889..37b3546 100644
+--- a/out/main/index.js
++++ b/out/main/index.js
+@@ -12,6 +12,7 @@ const Backend = require("i18next-fs-backend");
+ const os = require("os");
+ const settings = require("electron-settings");
+ const windowStateKeeper = require("electron-window-state");
++const linuxUpdate = require("./linux-update.js");
+ const fs$1 = require("fs");
+ const sparkMcp = require("@ali/spark-mcp");
+ const aes = new AES({
+@@ -109,10 +110,20 @@ const initializeAutoUpdater = () => {
+     platformSpecificPath = `windows/${process.arch}/`;
+   }
+   console.log("autoUpdate url", BASE_URL + platformSpecificPath);
+-  electronUpdater.autoUpdater.setFeedURL({
+-    provider: "generic",
+-    url: BASE_URL + platformSpecificPath
+-  });
++  if (process.platform === "linux") {
++    electronUpdater.autoUpdater.allowPrerelease = false;
++    electronUpdater.autoUpdater.autoInstallOnAppQuit = !!process.env.APPIMAGE;
++    electronUpdater.autoUpdater.setFeedURL({
++      provider: "github",
++      owner: "sams-git-195",
++      repo: "qwenstudio-linux"
++    });
++  } else {
++    electronUpdater.autoUpdater.setFeedURL({
++      provider: "generic",
++      url: BASE_URL + platformSpecificPath
++    });
++  }
+   electronUpdater.autoUpdater.logger = {
+     info: () => {
+     },
+@@ -200,6 +211,10 @@ const checkForUpdates = () => {
+     initializeAutoUpdater();
+     autoUpdateConfig.notAvailableTip = true;
+     console.log("Manual check for updates triggered");
++    if (linuxUpdate.isNotifyOnly()) {
++      linuxUpdate.check({ manual: true, currentVersion: electron.app.getVersion(), dialog: electron.dialog, shell: electron.shell, net: electron.net, t: (k, o) => i18next.t(k, o), icon });
++      return;
++    }
+     electronUpdater.autoUpdater.checkForUpdates();
+   } catch (error) {
+     console.error("Failed to check for updates:", error);
+@@ -212,6 +227,10 @@ const checkForUpdates = () => {
+ };
+ const autoUpdate = () => {
+   initializeAutoUpdater();
++  if (linuxUpdate.isNotifyOnly()) {
++    linuxUpdate.check({ manual: false, currentVersion: electron.app.getVersion(), dialog: electron.dialog, shell: electron.shell, net: electron.net, t: (k, o) => i18next.t(k, o), icon });
++    return;
++  }
+   electronUpdater.autoUpdater.checkForUpdates();
+ };
+ const buildAppMenu = () => {

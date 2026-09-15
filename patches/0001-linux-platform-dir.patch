@@ -1,0 +1,14 @@
+diff --git a/out/main/index.js b/out/main/index.js
+index c9899a4..58a0889 100644
+--- a/out/main/index.js
++++ b/out/main/index.js
+@@ -36,6 +36,9 @@ function getPlatformDir(platform = os.platform(), arch = os.arch()) {
+   if (platform === "win32") {
+     return "win-x64";
+   }
++  if (platform === "linux") {
++    return arch === "arm64" ? "linux-arm64" : "linux-x64";
++  }
+   throw new Error(`Unsupported platform: ${platform}, arch: ${arch}`);
+ }
+ const resourcesPath = () => utils.is.dev ? `${electron.app.getAppPath()}/resources` : process.resourcesPath;
