@@ -57,4 +57,13 @@ export async function extractAll(): Promise<void> {
   console.log(`extracted upstream ${up.version}.${up.build} (Electron ${electronDetected})`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) extractAll();
+export async function main(): Promise<void> {
+  try {
+    await extractAll();
+  } catch (e) {
+    console.error(String((e as Error).message));
+    process.exit(1);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
