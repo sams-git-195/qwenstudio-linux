@@ -1,0 +1,43 @@
+{
+  "name": "qwen-studio",
+  "version": "0.0.0-wrapper",
+  "private": true,
+  "description": "Unofficial Linux packaging of Qwen Studio (Alibaba's desktop client for chat.qwen.ai)",
+  "homepage": "https://github.com/sams-git-195/qwenstudio-linux",
+  "license": "MIT",
+  "author": "sams-git-195 <samheard95@gmail.com>",
+  "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "fetch": "tsx scripts/fetch.ts",
+    "extract": "tsx scripts/extract.ts",
+    "patch": "tsx scripts/patch.ts",
+    "assemble": "tsx scripts/assemble.ts",
+    "icons": "tsx scripts/icons.ts",
+    "build": "tsx scripts/build.ts",
+    "verify": "tsx scripts/verify.ts",
+    "version": "tsx scripts/version.ts",
+    "patches:dev": "tsx scripts/build.ts --until patch",
+    "patches:export": "tsx scripts/patch.ts --export",
+    "changelog": "tsx scripts/changelog.ts",
+    "upstream-check": "tsx scripts/upstream-check.ts"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.2",
+    "@commitlint/config-conventional": "21.2.2",
+    "@electron/asar": "4.3.0",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "22.15.3",
+    "@types/semver": "7.7.0",
+    "electron-builder": "26.15.3",
+    "electron-updater": "6.6.2",
+    "js-yaml": "4.1.0",
+    "semver": "7.7.2",
+    "sharp": "0.35.4",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}
