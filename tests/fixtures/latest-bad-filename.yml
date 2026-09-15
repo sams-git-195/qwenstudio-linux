@@ -1,0 +1,8 @@
+version: 1.0.3
+files:
+  - url: QwenStudio-Setup-1.0.3.exe
+    sha512: i9mh4W2lC2YzTcV5L4uaMwwWj9pthH/uIZEi1/MuxtLIyC53ZFgrETzdACJMECAwnI0VtYOLlI/gHm+gsfj8qA==
+    size: 1
+path: QwenStudio-Setup-1.0.3.exe
+sha512: i9mh4W2lC2YzTcV5L4uaMwwWj9pthH/uIZEi1/MuxtLIyC53ZFgrETzdACJMECAwnI0VtYOLlI/gHm+gsfj8qA==
+releaseDate: '2025-08-15T03:38:13.875Z'
