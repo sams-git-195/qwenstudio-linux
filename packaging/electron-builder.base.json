@@ -6,7 +6,7 @@
   "publish": [{ "provider": "github", "owner": "sams-git-195", "repo": "qwenstudio-linux" }],
   "linux": {
     "target": [],
-    "category": "Network",
+    "category": "Network;Chat",
     "synopsis": "Desktop client for Qwen Chat (unofficial Linux packaging)",
     "description": "Unofficial Linux packaging of Qwen Studio, Alibaba's desktop client for chat.qwen.ai. Not affiliated with Alibaba Cloud.",
     "maintainer": "sams-git-195 <samheard95@gmail.com>",
@@ -18,7 +18,6 @@
       "entry": {
         "Name": "Qwen Studio",
         "Comment": "Chat with Qwen",
-        "Categories": "Network;Chat;",
         "StartupWMClass": "Qwen Studio",
         "MimeType": "x-scheme-handler/qwen;"
       }
