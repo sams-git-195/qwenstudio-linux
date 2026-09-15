@@ -6,9 +6,10 @@ import { extractAll } from "./extract.js";
 import { applyPatches, finishPatchStage } from "./patch.js";
 import { assemble } from "./assemble.js";
 import { renderIcons } from "./icons.js";
+import { packageAll } from "./lib/electron-builder-config.js";
 import { ICONS_DIR, WIN_APP_DIR } from "./lib/paths.js";
 
-export const STAGES = ["fetch", "extract", "patch", "assemble", "icons"] as const;
+export const STAGES = ["fetch", "extract", "patch", "assemble", "icons", "package"] as const;
 export type Stage = (typeof STAGES)[number];
 
 export function selectStages(until: string | undefined): Stage[] {
@@ -24,6 +25,7 @@ const impl: Record<Stage, () => Promise<void>> = {
   patch: async () => { applyPatches(); finishPatchStage(); },
   assemble,
   icons: async () => { await renderIcons(path.join(WIN_APP_DIR, "resources", "assets", "icon.png"), ICONS_DIR); },
+  package: packageAll,
 };
 
 export async function runStages(until?: string): Promise<void> {
