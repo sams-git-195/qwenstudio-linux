@@ -1,9 +1,18 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import { buildConfig, TARGETS } from "../../scripts/lib/electron-builder-config.js";
 import { deriveVersions } from "../../scripts/lib/versions.js";
 import { readSidecars } from "../../scripts/lib/manifest.js";
 
 const v = deriveVersions({ version: "1.0.3", build: 44, wrapper_revision: 1 });
+
+describe("packaging/electron-builder.base.json", () => {
+  it("does not hardcode electronVersion (sidecars.json is the single source of truth)", () => {
+    const base = JSON.parse(readFileSync(path.join(process.cwd(), "packaging", "electron-builder.base.json"), "utf8"));
+    expect("electronVersion" in base).toBe(false);
+  });
+});
 
 describe("buildConfig", () => {
   it("lists the three targets", () => expect(TARGETS).toEqual(["AppImage", "deb", "rpm"]));
