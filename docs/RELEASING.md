@@ -119,12 +119,16 @@ property (`scripts/upstream-check.ts`), not a bug. On the bot's branch (or a fre
 
 1. Update `sidecars.json`'s `electron` entry: `version`, `url`, and `sha256` (from Electron's
    official `SHASUMS256.txt` for that release's `electron-v<version>-linux-x64.zip`). `bun` and
-   `uv` are unrelated to a Qwen/Electron bump and are not touched by this procedure. Nothing else
-   needs editing: `electron-builder`'s `electronVersion` is derived from this same file at build
-   time (`scripts/lib/electron-builder-config.ts`), not hardcoded in the packaging config. The
-   branch already carries a `wrapper_revision: 1` bump in `upstream.json` from the bot's own
-   commit, so this edit alone is enough to make the branch release once it merges — no separate
-   version bump needed here.
+   `uv` are unrelated to a Qwen/Electron bump and are not touched by this procedure. The build
+   itself needs nothing else: `electron-builder`'s `electronVersion` is derived from this same
+   file at build time (`scripts/lib/electron-builder-config.ts`), not hardcoded in the packaging
+   config. Two documentation cells DO have to follow, though, or `npm run test:unit` fails
+   (`tests/unit/docs.test.ts` checks them against `sidecars.json`): the Electron version in
+   `THIRD_PARTY_NOTICES.md` (it appears twice in that row — the component name and the version
+   column) and the "official Electron `<version>` Linux runtime" sentence near the top of
+   `README.md`. The branch already carries a `wrapper_revision: 1` bump in `upstream.json` from
+   the bot's own commit, so these edits are enough to make the branch release once it merges —
+   no separate version bump needed here.
 2. Re-run the pre-flight checks locally (`npm run patches:dev`, `npm run test:unit`) to confirm
    the new Electron version doesn't also break a patch.
 3. Push, remove `needs-human`, add `automerge`, and run `gh pr merge --auto --squash <pr>` (or
@@ -132,7 +136,14 @@ property (`scripts/upstream-check.ts`), not a bug. On the bot's branch (or a fre
 
 To update `sidecars.json` on its own, with no matching upstream version change (for example a
 security-only Electron point release), also bump `wrapper_revision` in `upstream.json` — see
-"Shipping a wrapper-only change" above — or the merge produces no new tag.
+"Shipping a wrapper-only change" above — or the merge produces no new tag. A `bun` or `uv` bump
+follows the same pattern: edit its `sidecars.json` entry, the matching `THIRD_PARTY_NOTICES.md`
+row (both version cells), and bump `wrapper_revision`. The versions the smoke test asserts
+(`tests/smoke/smoke.sh`, `bun --version` / `uv --version`) need no separate edit for CI: the
+install matrix in `.github/workflows/build-and-test.yml` derives `BUN_VERSION`/`UV_VERSION` from
+`sidecars.json` with `jq` and passes them into each container. Only `smoke.sh`'s built-in
+fallback defaults (used by ad-hoc local runs without those variables) mirror `sidecars.json`, so
+bump those two lines too to keep them honest.
 
 ## Patches no longer apply
 

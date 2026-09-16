@@ -75,7 +75,7 @@ Settings → Secrets and variables → Actions:
 ## Labels
 
 `scripts/repo-setup.sh` creates (and is safe to re-run to update the colors of):
-`needs-human`, `automerge`, `upstream-bump`, `dependencies`, `qa-defect`, `packaging`.
+`needs-human`, `automerge`, `upstream-bump`, `dependencies`, `qa-defect`, `packaging`, `bug`.
 
 ```bash
 scripts/repo-setup.sh            # create/update the labels on sams-git-195/qwenstudio-linux
@@ -85,7 +85,7 @@ scripts/repo-setup.sh --dry-run  # print what would change, no API calls
 Run it once against a new repository, and again any time a label listed above is missing. Two
 workflows have a best-effort fallback if a label is gone — `release.yml`'s `changelog` job
 recreates `automerge`, and `ci.yml`'s `flag-needs-human` recreates `needs-human` — but nothing
-recreates `upstream-bump`, `dependencies`, `qa-defect` or `packaging`, so treat this script's
+recreates `upstream-bump`, `dependencies`, `qa-defect`, `packaging` or `bug`, so treat this script's
 output as the source of truth rather than relying on any workflow's fallback.
 
 ## Maintenance
@@ -122,7 +122,7 @@ gh secret list
 
 # The labels the workflows depend on exist
 gh label list
-# -> needs-human, automerge, upstream-bump, dependencies, qa-defect, packaging
+# -> needs-human, automerge, upstream-bump, dependencies, qa-defect, packaging, bug
 
 # The bot runs cleanly end-to-end without writing anything
 gh workflow run upstream-check.yml -f dry_run=true

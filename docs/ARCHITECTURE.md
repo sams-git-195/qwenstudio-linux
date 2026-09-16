@@ -140,7 +140,7 @@ required status check (see `docs/BRANCH_PROTECTION.md`); `flag-needs-human` swap
 label for `needs-human` on a failed upstream-bump PR instead of letting it auto-merge red.
 
 `release.yml` runs on every push to `main`. `plan` derives the git tag from
-`upstream.json`/`sidecars.json` and skips the rest of the workflow when that tag already exists on
+`upstream.json` and skips the rest of the workflow when that tag already exists on
 origin (so a docs-only merge, a Dependabot bump, or the workflow's own CHANGELOG PR never
 re-release). Otherwise it re-runs the full `build-and-test.yml` and `publish` tags the built
 commit, creates the GitHub Release (never draft/prerelease, marked latest — required for
