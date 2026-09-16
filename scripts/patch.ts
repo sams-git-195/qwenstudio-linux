@@ -20,7 +20,7 @@ export function listPatches(): string[] {
 // and silently skips (exit 0, no changes) any patch whose paths don't fall under cwd's prefix
 // relative to that root -- setting the ceiling to cwd itself is not enough, since git still
 // ascends past cwd once before consulting the ceiling list.
-function gitApply(patchFile: string, cwd: string, check: boolean): void {
+export function gitApply(patchFile: string, cwd: string, check: boolean): void {
   run("git", ["apply", ...(check ? ["--check"] : []), "--whitespace=nowarn", patchFile], {
     cwd, capture: true, env: { GIT_CEILING_DIRECTORIES: path.dirname(cwd) },
   });
