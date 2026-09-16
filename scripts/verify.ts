@@ -9,6 +9,7 @@ import { readUpstream } from "./lib/manifest.js";
 import { deriveVersions } from "./lib/versions.js";
 import { sha512Base64File } from "./lib/hash.js";
 import { DIST_DIR, BUILD_DIR } from "./lib/paths.js";
+import { PACKAGE_LICENSE } from "./lib/electron-builder-config.js";
 
 export const DEB_EXEC_RE = /^"?\/opt\/Qwen Studio\/qwen-studio"? --ozone-platform-hint=auto %U$/;
 export const APPIMAGE_EXEC_RE = /^AppRun --ozone-platform-hint=auto %U$/;
@@ -83,6 +84,10 @@ export async function verifyAll(): Promise<void> {
     eq(fields.Version, v.debVersion, "deb Version");
     eq(fields.Package, "qwen-studio", "deb Package");
     eq(fields.Architecture, "amd64", "deb Architecture");
+    // Regression guard: electron-builder passes package.json's "MIT" as `--license` before our
+    // deb.fpm `--license`; fpm keeps the last one. If that ordering ever changes, the .deb would
+    // silently claim the proprietary Qwen Studio payload is MIT.
+    eq(fields.License, PACKAGE_LICENSE, "deb License");
   });
 
   check("deb payload paths", () => {
@@ -108,6 +113,8 @@ export async function verifyAll(): Promise<void> {
       `qwen-studio ${v.rpmVersion} ${v.rpmRelease} x86_64`,
       "rpm NVR",
     );
+    // Same last-wins `--license` guard as the deb control check above, for the rpm header.
+    eq(run("rpm", ["-qp", "--qf", "%{LICENSE}", rpm], { capture: true }).trim(), PACKAGE_LICENSE, "rpm LICENSE");
     const list = run("rpm", ["-qpl", rpm], { capture: true });
     for (const p of REQUIRED_PATHS) if (!list.includes(`/${p}`)) throw new Error(`missing /${p}`);
   });
@@ -157,4 +164,16 @@ export async function verifyAll(): Promise<void> {
   console.log("\nall artifact verifications passed");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) verifyAll();
+// Like build.ts's main(): anything thrown OUTSIDE the individual check()/checkAsync() wrappers
+// (a missing dist/, an unreadable upstream.json, ...) is reported as a one-line failure instead
+// of an unhandled-rejection stack dump. Failures inside checks already exit(6) in verifyAll().
+export async function main(): Promise<void> {
+  try {
+    await verifyAll();
+  } catch (e) {
+    console.error(`verify failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(6);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();

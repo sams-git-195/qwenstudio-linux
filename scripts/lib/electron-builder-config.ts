@@ -51,6 +51,16 @@ export type Target = "AppImage" | "deb" | "rpm";
 export const TARGETS: Target[] = ["AppImage", "deb", "rpm"];
 export const HOMEPAGE = "https://github.com/sams-git-195/qwenstudio-linux";
 
+// The License field shipped in the .deb control file and the rpm header. package.json's
+// "license": "MIT" covers only this repository's packaging code; the payload (the upstream
+// Qwen Studio app) is proprietary, so the package metadata must not claim MIT for the whole
+// thing. electron-builder's FpmTarget always emits `--license <package.json license>` BEFORE
+// appending `deb.fpm` / `rpm.fpm` (app-builder-lib/out/targets/FpmTarget.js), and fpm takes the
+// last `--license` it sees, so the `--license` entries in packaging/electron-builder.base.json
+// win. This constant mirrors that JSON literal (tests/unit/electron-builder-config.test.ts pins
+// the two together) so scripts/verify.ts can assert the built artifacts really carry it.
+export const PACKAGE_LICENSE = "Proprietary (Qwen Studio, Alibaba Cloud) and MIT (packaging)";
+
 export function buildConfig(target: Target, v: DerivedVersions): Record<string, unknown> {
   const base = JSON.parse(readFileSync(path.join(ROOT, "packaging", "electron-builder.base.json"), "utf8"));
   const cfg = structuredClone(base) as Record<string, any>;

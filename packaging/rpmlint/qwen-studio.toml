@@ -43,4 +43,13 @@ Filters = [
   # them. This is a rpmlint false positive for packages built with AutoReqProv disabled, not a
   # real dependency defect -- see task B5 report "concerns" for the full analysis.
   "explicit-lib-dependency",
+  # The License header is deliberately "Proprietary (Qwen Studio, Alibaba Cloud) and MIT
+  # (packaging)" (packaging/electron-builder.base.json, asserted by scripts/verify.ts): the
+  # payload is the proprietary upstream app and only this repository's packaging is MIT, and
+  # electron-builder would otherwise stamp package.json's "MIT" on the whole package. rpmlint
+  # splits the string on "and"/parentheses and checks each token against Fedora's SPDX list, so
+  # every token that is not "MIT" trips this W. This is metadata this packaging controls, but
+  # there is no Fedora-valid identifier for an unlicensed proprietary payload that would also
+  # be truthful, so the W is filtered rather than the string weakened.
+  "invalid-license",
 ]
