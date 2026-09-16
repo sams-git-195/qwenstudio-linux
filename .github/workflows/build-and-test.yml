@@ -50,10 +50,14 @@ jobs:
         # were tuned against (see task B5 report). binutils/xz-utils/zstd are installed explicitly
         # so `ar`/`readelf`/`xz`/`zstd` are available regardless of what the runner image ships by
         # default (npm run verify needs ar/tar/xz/zstd/rpm/rpm2cpio/cpio/desktop-file-validate but
-        # not dpkg; tests/unit/deps.test.ts needs readelf, from binutils).
+        # not dpkg; tests/unit/deps.test.ts needs readelf, from binutils). xvfb/xauth are
+        # deliberately NOT installed: smoke.sh (the only Xvfb user) runs inside the install-matrix
+        # containers, never on this runner. libfuse2 IS needed: `npm run verify` only uses
+        # `--appimage-extract` (no FUSE), but the advisory appimagelint step below FUSE-mounts the
+        # AppImage via `--appimage-mount` (appimagelint/services/appimagemounter.py).
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq p7zip-full unzip rpm desktop-file-utils libfuse2 xvfb xauth cpio pipx binutils xz-utils zstd
+          sudo apt-get install -y -qq p7zip-full unzip rpm desktop-file-utils libfuse2 cpio pipx binutils xz-utils zstd
 
       - name: Restore downloads cache
         uses: actions/cache/restore@v4
@@ -167,11 +171,18 @@ jobs:
           path: dist
 
       - name: Install and smoke in ${{ matrix.image }}
+        # BUN_VERSION/UV_VERSION: tests/smoke/smoke.sh asserts `bun --version` / `uv --version`
+        # against these. Its built-in defaults are only a fallback for ad-hoc local runs; CI
+        # always derives them from sidecars.json (the single source of truth, checked out above)
+        # so a sidecar bump can never pass smoke against a stale hardcoded version. The container
+        # inherits them through install-and-smoke.sh's plain `bash smoke.sh` calls (no `env -i`).
         run: |
           mkdir -p logs
           docker run --rm --shm-size=1g \
             -v "$PWD/dist:/dist:ro" -v "$PWD/tests:/tests:ro" -v "$PWD/logs:/logs" \
             -e SMOKE_LOG=/logs/smoke.log \
+            -e BUN_VERSION="$(jq -r .bun.version sidecars.json)" \
+            -e UV_VERSION="$(jq -r .uv.version sidecars.json)" \
             "${{ matrix.image }}" bash /tests/install/install-and-smoke.sh "${{ matrix.format }}"
 
       # Spec §11.5 step 7: "always upload it as a job artifact". smoke.sh writes $LOG as soon as it

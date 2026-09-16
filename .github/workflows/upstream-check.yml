@@ -20,10 +20,14 @@
 #
 # Consequently this workflow asks for NO write scopes on GITHUB_TOKEN (`contents: read`): every
 # write -- `git push -f origin HEAD:refs/heads/upstream/...`, `gh pr create/edit/merge`,
-# `gh issue create/comment` -- goes through the PAT. The checkout is made with the PAT so the
-# checkout's `origin` remote (persist-credentials) is what authenticates the bot's push, and
-# GH_TOKEN carries the same PAT to `gh`. The bot only ever writes to `upstream/<base>/...`
-# branches (it refuses any other push target) and never modifies sidecars.json.
+# `gh issue create/comment` -- goes through the PAT. The checkout is made with the PAT but with
+# persist-credentials: false, so the PAT is NOT sitting in .git/config while `npm ci` runs
+# third-party install scripts; it is written into the `origin` remote URL only afterwards
+# ("Authenticate origin for the bot's push"), which is what authenticates the script's push. Its
+# `git fetch origin` / `ls-remote` calls hit the same authenticated remote (they would work
+# unauthenticated too on this public repo). GH_TOKEN carries the same PAT to `gh`. The bot only
+# ever writes to `upstream/<base>/...` branches (it refuses any other push target) and never
+# modifies sidecars.json.
 #
 # Untrusted/variable values (dispatch inputs) reach the script only via `env:`, never by
 # interpolating `${{ }}` into `run:`.
@@ -82,9 +86,9 @@ jobs:
         with:
           ref: ${{ inputs.base_branch || 'main' }}
           token: ${{ secrets.UPSTREAM_BOT_TOKEN }}
-          # Keep the PAT in the checkout's origin remote: the script's `git push -f origin ...`
-          # relies on it (there is no other credential in this job).
-          persist-credentials: true
+          # The PAT authenticates the clone only; it is added to the origin remote after `npm ci`
+          # (see the header and "Authenticate origin for the bot's push" below).
+          persist-credentials: false
           # The script re-fetches origin/<base> itself; full history keeps `git fetch`/`push`
           # from a shallow clone out of the picture (the repo is small).
           fetch-depth: 0
@@ -114,6 +118,17 @@ jobs:
             downloads-
 
       - run: npm ci
+
+      # Only now (after npm ci) does the PAT reach the checkout: scripts/upstream-check.ts's
+      # `git push -f origin HEAD:refs/heads/upstream/...` authenticates through this URL (there is
+      # no other git credential in this job).
+      - name: Authenticate origin for the bot's push
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
       - name: Run upstream check
         env:

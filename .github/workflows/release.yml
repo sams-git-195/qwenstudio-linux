@@ -1,7 +1,7 @@
 # Release pipeline (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md §12.4, §12.5).
 #
-# Every push to `main` is a release candidate. `plan` derives the git tag from upstream.json /
-# sidecars.json (`npm run version -- --print gitTag`, e.g. v1.0.3.44-1) and skips the whole run
+# Every push to `main` is a release candidate. `plan` derives the git tag from upstream.json
+# (`npm run version -- --print gitTag`, e.g. v1.0.3.44-1) and skips the whole run
 # when that tag already exists on origin -- so a docs-only merge, a Dependabot bump or the
 # CHANGELOG PR this workflow itself opens never re-release. When the tag is new, the full
 # reusable build + 7-leg install matrix (build-and-test.yml) runs on the exact artifacts that
@@ -126,11 +126,12 @@ jobs:
       attestations: write # actions/attest-build-provenance
     steps:
       # Default ref = $GITHUB_SHA, the commit build-and-test built from: the tag goes exactly
-      # there. persist-credentials (default true) leaves GITHUB_TOKEN in the checkout's origin
-      # remote, which is what authenticates the tag push.
+      # there. persist-credentials: false keeps GITHUB_TOKEN out of .git/config while `npm ci`
+      # runs third-party install scripts; the push credential is added to the origin remote only
+      # after that, in "Authenticate origin for the tag push" below.
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -138,6 +139,16 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Only now (after npm ci) does a write-capable token reach the checkout: `git push` in the
+      # Tag step authenticates through this URL. github.token has contents: write here.
+      - name: Authenticate origin for the tag push
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
       - uses: actions/download-artifact@v4
         with:
@@ -155,8 +166,8 @@ jobs:
             ls -la
             exit 1
           fi
-          # Explicit list (not *): dist/ also carries electron-builder's builder-debug.yml, which is
-          # neither published nor checksummed.
+          # Explicit list (not *): SHA256SUMS is written into dist/ itself (a re-run must not
+          # checksum the previous SHA256SUMS), and only the four published files belong in it.
           sha256sum "${debs[0]}" "${rpms[0]}" "${appimages[0]}" latest-linux.yml > SHA256SUMS
           cat SHA256SUMS
 
@@ -248,7 +259,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     # No GITHUB_TOKEN scopes at all: the branch push, PR and auto-merge all go through the PAT
-    # (see header for why the PAT is required).
+    # (see header for why the PAT is required). The PAT reaches the checkout's origin remote only
+    # after `npm ci` (see "Authenticate origin for the branch push" below).
     permissions: {}
     steps:
       # Before checkout on purpose: actions/checkout with an empty `token:` fails with an
@@ -265,12 +277,13 @@ jobs:
           fi
 
       # Branch from the CURRENT main (not $GITHUB_SHA) so the PR is mergeable even if main moved
-      # on during the build; the PAT in the checkout's origin remote authenticates the push.
+      # on during the build. `token:` authenticates the clone itself; persist-credentials: false
+      # then keeps the PAT out of .git/config while `npm ci` runs third-party install scripts.
       - uses: actions/checkout@v4
         with:
           ref: main
           token: ${{ secrets.UPSTREAM_BOT_TOKEN }}
-          persist-credentials: true
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -278,6 +291,16 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Only now (after npm ci) does the PAT reach the checkout: the `git push -f origin` below
+      # authenticates through this URL.
+      - name: Authenticate origin for the branch push
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
       - name: Open auto-merging CHANGELOG PR
         env:

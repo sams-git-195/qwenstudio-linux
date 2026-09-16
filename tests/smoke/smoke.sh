@@ -9,6 +9,9 @@ EXE="${1:?executable path required}"
 RES="${2:?resources dir required}"
 PORT="${SMOKE_PORT:-9333}"
 LOG="${SMOKE_LOG:-$PWD/smoke.log}"
+# Fallback defaults for ad-hoc local runs only; they mirror sidecars.json and must be bumped with
+# it (docs/RELEASING.md). CI never relies on them: build-and-test.yml's install-matrix derives
+# BUN_VERSION/UV_VERSION from sidecars.json with jq and passes them into the container.
 BUN_VERSION="${BUN_VERSION:-1.2.10}"
 UV_VERSION="${UV_VERSION:-0.12.15}"
 XPID=""

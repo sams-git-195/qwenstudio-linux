@@ -16,11 +16,14 @@ Node 22 via nvm: `nvm install 22 && nvm use`. Then:
     npm run typecheck && npm run test:unit
     npm run build          # downloads ~300 MB into .cache/ on first run, writes dist/
     npm run verify
-    tests/smoke/smoke.sh build/linux-unpacked/qwen-studio build/linux-unpacked/resources
+    BUN_VERSION=$(jq -r .bun.version sidecars.json) UV_VERSION=$(jq -r .uv.version sidecars.json) \
+      tests/smoke/smoke.sh build/linux-unpacked/qwen-studio build/linux-unpacked/resources
+
+`smoke.sh` asserts the bundled `bun`/`uv` versions against `BUN_VERSION`/`UV_VERSION`; CI derives them from `sidecars.json` exactly like this (`.github/workflows/build-and-test.yml`), and the script's built-in defaults are only a fallback that mirrors `sidecars.json`.
 
 `npm run build`/`npm run verify` need `7z`, `unzip`, `tar`, `xz`, `zstd`, `rpm`, `rpm2cpio`, `cpio` and `desktop-file-validate` on `PATH`; `tests/unit/deps.test.ts` needs `readelf` (from `binutils`). `dpkg` is not required.
 
-Container install tests (any one leg, requires podman or docker): `docker run --rm --shm-size=1g -v "$PWD/dist:/dist:ro" -v "$PWD/tests:/tests:ro" ubuntu:24.04 bash /tests/install/install-and-smoke.sh deb`. Other legs: `rpm` (on a `fedora` image) and `appimage`; the full matrix (deb on Ubuntu 22.04/24.04 and Debian 12, rpm on Fedora 40/41, AppImage on Ubuntu 22.04 and Fedora 41) is what CI runs via `tests/install/install-and-smoke.sh`.
+Container install tests (any one leg, requires podman or docker): `docker run --rm --shm-size=1g -v "$PWD/dist:/dist:ro" -v "$PWD/tests:/tests:ro" -e BUN_VERSION="$(jq -r .bun.version sidecars.json)" -e UV_VERSION="$(jq -r .uv.version sidecars.json)" ubuntu:24.04 bash /tests/install/install-and-smoke.sh deb`. Other legs: `rpm` (on a `fedora` image) and `appimage`; the full matrix (deb on Ubuntu 22.04/24.04 and Debian 12, rpm on Fedora 40/41, AppImage on Ubuntu 22.04 and Fedora 41) is what CI runs via `tests/install/install-and-smoke.sh`.
 
 ## Patches
 
