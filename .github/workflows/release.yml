@@ -23,7 +23,7 @@
 # with GITHUB_TOKEN never gets a `pull_request` run of ci.yml, so `ci-status` would never appear
 # and auto-merge would never fire. The PR is docs-only, so ci.yml runs only lint-unit +
 # ci-status; when it merges, the push to main re-triggers this workflow, whose `plan` skips
-# (tag exists; the `chore(release):` guard on `plan` short-circuits even earlier).
+# (tag exists).
 #
 # Re-running the failed `publish` job of the same run (download-artifact still has `packages`)
 # is safe: the tag is reused if it already exists, and an existing release gets its assets
@@ -57,10 +57,9 @@ env:
 jobs:
   plan:
     name: Plan release
-    # The CHANGELOG PR squash-merges as `chore(release): changelog for <tag>`; `plan` would skip
-    # on tag-exists anyway, this just saves the checkout + npm ci. head_commit is null on
-    # workflow_dispatch, so the expression is simply true there.
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    # No commit-message guard on purpose: a human PR titled `chore(release): bump wrapper_revision`
+    # must still release. The tag-exists check below is what makes the CHANGELOG PR's own merge
+    # (and every other non-version-changing push) a no-op.
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -195,6 +194,9 @@ jobs:
             echo "tag $TAG already exists on origin (re-run); reusing it"
             exit 0
           fi
+          # An annotated tag needs a tagger identity; the runner has none configured.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "$NAME"
           git push origin "refs/tags/$TAG"
           echo "tagged $(git rev-parse HEAD) as $TAG"
@@ -207,7 +209,17 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+          # Only a definite "not found" may take the create path; any other failure (auth, 5xx,
+          # network) must stop here rather than attempt a second create.
+          if view=$(gh release view "$TAG" --repo "$REPO" 2>&1); then
+            exists=true
+          elif printf '%s' "$view" | grep -qiE 'release not found|HTTP 404|Not Found'; then
+            exists=false
+          else
+            echo "::error::gh release view $TAG failed: $view"
+            exit 1
+          fi
+          if [ "$exists" = true ]; then
             echo "::warning::release $TAG already exists (re-run); re-uploading assets with --clobber"
             gh release upload "$TAG" --repo "$REPO" --clobber dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS
             gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease=false --latest --title "$NAME" --notes-file build/notes.md
@@ -235,10 +247,9 @@ jobs:
     needs: [plan, publish]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    # Read-only on GITHUB_TOKEN: the branch push, PR and auto-merge all go through the PAT
+    # No GITHUB_TOKEN scopes at all: the branch push, PR and auto-merge all go through the PAT
     # (see header for why the PAT is required).
-    permissions:
-      contents: read
+    permissions: {}
     steps:
       # Before checkout on purpose: actions/checkout with an empty `token:` fails with an
       # unrelated-looking auth error. The release itself is already published at this point;
@@ -293,17 +304,11 @@ jobs:
           # -f: on a re-run the branch already exists and is ours to rewrite.
           git push -f origin "HEAD:refs/heads/$BR"
 
-          # Ensure the label exists (idempotent) so `--label automerge` can't fail on a repo that
-          # hasn't run scripts/repo-setup.sh yet. Same colour as repo-setup.sh.
-          gh label create automerge --repo "$REPO" --color 0e8a16 --force \
-            || echo "::warning::could not create/update the automerge label on $REPO"
-
           PR=$(gh pr list --repo "$REPO" --head "$BR" --base main --state open --json number -q '.[0].number // empty')
           if [ -n "$PR" ]; then
             echo "reusing open PR #$PR for $BR"
-            gh pr edit "$PR" --repo "$REPO" --add-label automerge || echo "::warning::could not add the automerge label to PR #$PR"
           else
-            url=$(gh pr create --repo "$REPO" --base main --head "$BR" --title "$TITLE" --label automerge \
+            url=$(gh pr create --repo "$REPO" --base main --head "$BR" --title "$TITLE" \
               --body "Finalizes CHANGELOG.md for $TAG (release: https://github.com/$REPO/releases/tag/$TAG). Docs-only; auto-merges when ci-status passes.")
             PR=${url##*/}
             case "$PR" in
@@ -311,6 +316,14 @@ jobs:
             esac
             echo "opened PR #$PR: $url"
           fi
+
+          # Label AFTER the PR exists and best-effort: on a fresh repo the label may not exist yet
+          # (scripts/repo-setup.sh not run) or the PAT may lack Issues: write; neither may cost the
+          # PR or the auto-merge below. Same colour as repo-setup.sh.
+          gh label create automerge --repo "$REPO" --color 0e8a16 --force \
+            || echo "::warning::could not create/update the automerge label on $REPO (run scripts/repo-setup.sh)"
+          gh pr edit "$PR" --repo "$REPO" --add-label automerge \
+            || echo "::warning::could not add the automerge label to PR #$PR; auto-merge is armed regardless"
 
           # Same guard as scripts/upstream-check.ts: arming auto-merge on a PR that already has
           # it enabled errors, and a re-run of this job must stay green.

@@ -12,9 +12,11 @@
 # opened by GITHUB_TOKEN therefore never gets a `pull_request` run of ci.yml, so the required
 # `ci-status` check never appears, so the auto-merge the bot arms can never be satisfied -- the
 # PR would sit open forever. The bot instead acts as the repository owner through a
-# fine-grained PAT scoped to this repository (Contents: read/write, Pull requests: read/write,
-# Workflows: read/write -- the last so a bump branch may carry workflow edits without the push
-# being refused; the bot itself never edits .github/). Setup lives in docs/BRANCH_PROTECTION.md.
+# fine-grained PAT scoped to this repository with Contents: read/write, Pull requests: read/write,
+# Issues: read/write (the bot files/comments on `Upstream bot failure` issues and labels PRs --
+# labels are an Issues permission), Workflows: read/write (so a bump branch may carry workflow
+# edits without the push being refused; the bot itself never edits .github/). Setup lives in
+# docs/BRANCH_PROTECTION.md.
 #
 # Consequently this workflow asks for NO write scopes on GITHUB_TOKEN (`contents: read`): every
 # write -- `git push -f origin HEAD:refs/heads/upstream/...`, `gh pr create/edit/merge`,
