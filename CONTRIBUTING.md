@@ -4,11 +4,11 @@
 
 Fedora:
 
-    sudo dnf install -y git nodejs-npm p7zip p7zip-plugins unzip rpm-build rpm desktop-file-utils cpio binutils xz zstd xorg-x11-server-Xvfb xorg-x11-xauth curl
+    sudo dnf install -y git nodejs-npm p7zip p7zip-plugins unzip rpm-build rpm desktop-file-utils cpio binutils xz zstd jq xorg-x11-server-Xvfb xorg-x11-xauth curl
 
 Ubuntu/Debian:
 
-    sudo apt install -y git p7zip-full unzip rpm desktop-file-utils cpio binutils xz-utils zstd xvfb xauth curl libfuse2
+    sudo apt install -y git p7zip-full unzip rpm desktop-file-utils cpio binutils xz-utils zstd jq xvfb xauth curl libfuse2
 
 Node 22 via nvm: `nvm install 22 && nvm use`. Then:
 
