@@ -118,7 +118,7 @@ jobs:
           pipx install git+https://github.com/TheAssassin/appimagelint@27f5d08808fd2a96543f4efb72e1b824b3e32652
           ~/.local/bin/appimagelint dist/*.AppImage | tee appimagelint.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: appimagelint-report
@@ -126,7 +126,7 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: dist/
@@ -191,7 +191,7 @@ jobs:
       # enough to invoke smoke.sh, pass or fail. `if-no-files-found: ignore` only covers legs that
       # died *before* smoke.sh ran at all (e.g. a package-install failure or a layout assertion in
       # install-and-smoke.sh's assert_installed_layout, both of which happen earlier in the script).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: smoke-log-${{ matrix.leg }}
