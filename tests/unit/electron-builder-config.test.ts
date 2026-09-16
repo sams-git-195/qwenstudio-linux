@@ -29,7 +29,12 @@ describe("buildConfig", () => {
     expect(c.deb.artifactName).toBe("qwen-studio_1.0.3.44-1_amd64.deb");
     expect(c.deb.fpm).toEqual(["--version", "1.0.3.44", "--iteration", "1"]);
     expect(c.linux.executableArgs).toEqual(["--ozone-platform-hint=auto"]);
-    expect(c.deb.depends).toContain("libasound2");
+    // Debian control alternation, not two separate deps: on Ubuntu 24.04 a plain "libasound2"
+    // dependency is ambiguous between libasound2t64 (real ALSA) and liboss4-salsa-asound2 (an
+    // OSS-compat shim that also Provides: libasound2 but is missing symbols electron needs, e.g.
+    // snd_device_name_get_hint) -- apt can pick either to satisfy an unqualified "libasound2"
+    // dependency, so the real package must be listed first.
+    expect(c.deb.depends).toContain("libasound2t64 | libasound2");
   });
   it("generates the rpm config", () => {
     const c = buildConfig("rpm", v) as Record<string, any>;

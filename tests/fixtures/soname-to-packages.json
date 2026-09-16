@@ -1,5 +1,5 @@
 {
-  "libasound.so.2": { "deb": "libasound2", "rpm": "alsa-lib" },
+  "libasound.so.2": { "deb": "libasound2t64 | libasound2", "rpm": "alsa-lib" },
   "libatk-1.0.so.0": { "deb": "libatk1.0-0", "rpm": "atk" },
   "libatk-bridge-2.0.so.0": { "deb": "libatk-bridge2.0-0", "rpm": "at-spi2-atk" },
   "libatspi.so.0": { "deb": "libatspi2.0-0", "rpm": "at-spi2-core" },
@@ -34,5 +34,5 @@
   "libXext.so.6": { "deb": "libxext6", "rpm": "libXext" },
   "libXfixes.so.3": { "deb": "libxfixes3", "rpm": "libXfixes" },
   "libxkbcommon.so.0": { "deb": "libxkbcommon0", "rpm": "libxkbcommon" },
-  "libXrandr.so.2": { "deb": "libxrandr6", "rpm": "libXrandr" }
+  "libXrandr.so.2": { "deb": "libxrandr2", "rpm": "libXrandr" }
 }
