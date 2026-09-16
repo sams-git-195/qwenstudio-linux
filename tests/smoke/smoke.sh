@@ -12,17 +12,41 @@ LOG="${SMOKE_LOG:-$PWD/smoke.log}"
 BUN_VERSION="${BUN_VERSION:-1.2.10}"
 UV_VERSION="${UV_VERSION:-0.12.15}"
 XPID=""
+PGID=""
 SMOKE_TMP_HOME=""
 
 cleanup() {
+  rc=$?
   if [ "${SMOKE_KEEP_RUNNING:-0}" != "1" ] && [ -n "$SMOKE_TMP_HOME" ] && [ -d "$SMOKE_TMP_HOME" ]; then
-    rm -rf "$SMOKE_TMP_HOME"
+    rm -rf "$SMOKE_TMP_HOME" || true
   fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
 dump_log() { if [ -f "$LOG" ]; then echo "--- $LOG ---" >&2; cat "$LOG" >&2; echo "--- end log ---" >&2; fi; }
-fail() { echo "SMOKE FAIL: $*" >&2; dump_log; if [ -n "$XPID" ] && kill -0 "$XPID" 2>/dev/null; then kill -TERM "$XPID" 2>/dev/null || true; fi; exit 1; }
+
+# Signal an entire process group, not just its leader: xvfb-run does not
+# forward signals to the app it wraps, so signalling only the launcher PID
+# can leave Xvfb and/or the Electron process orphaned holding $PORT.
+kill_group() {
+  local pgid="$1"
+  [ -z "$pgid" ] && return 0
+  kill -TERM -- "-$pgid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 -- "-$pgid" 2>/dev/null || return 0
+    sleep 1
+  done
+  kill -KILL -- "-$pgid" 2>/dev/null || true
+}
+
+fail() {
+  echo "SMOKE FAIL: $*" >&2
+  dump_log
+  [ -n "$PGID" ] && kill_group "$PGID"
+  exit 1
+}
+
 targets() { curl -s "http://127.0.0.1:$PORT/json" 2>/dev/null | tr -d '\n' | sed 's/},/}\n/g'; }
 
 echo "== 1. sidecar versions"
@@ -32,8 +56,11 @@ echo "== 1. sidecar versions"
 
 echo "== 2. launch"
 if ! command -v xvfb-run >/dev/null 2>&1 && [ -z "${DISPLAY:-}" ]; then
-  echo "SMOKE FAIL: neither xvfb-run nor an existing DISPLAY is available; cannot launch" >&2
-  exit 1
+  fail "neither xvfb-run nor an existing DISPLAY is available; cannot launch"
+fi
+
+if curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/json"; then
+  fail "port $PORT already answers /json (stale process or port in use)"
 fi
 
 ORIG_HOME="$HOME"
@@ -43,6 +70,11 @@ unset XDG_CONFIG_HOME
 export ELECTRON_ENABLE_LOGGING=1
 rm -f "$LOG"
 
+# Launch under job control so the backgrounded job (xvfb-run + everything it
+# forks, or the app directly) gets its own new process group whose PGID
+# equals $!, giving fail()/cleanup a single target that reaches every
+# descendant.
+set -m
 if command -v xvfb-run >/dev/null 2>&1; then
   xvfb-run -a "$EXE" --remote-debugging-port="$PORT" --no-sandbox >"$LOG" 2>&1 &
   XPID=$!
@@ -56,6 +88,8 @@ else
   "$EXE" --remote-debugging-port="$PORT" --no-sandbox >"$LOG" 2>&1 &
   XPID=$!
 fi
+set +m
+PGID=$XPID
 
 echo "== 3. wait for the shell page target"
 PAGE_LINE=""
@@ -99,3 +133,4 @@ if kill -0 "$XPID" 2>/dev/null; then fail "app still running 30 s after closing 
 RC=0; wait "$XPID" || RC=$?
 [ "$RC" = "0" ] || fail "app exit code $RC (expected 0)"
 echo "SMOKE PASS"
+exit 0
