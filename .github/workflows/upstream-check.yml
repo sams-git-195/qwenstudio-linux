@@ -1,0 +1,137 @@
+# Nightly upstream-tracking bot (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# §12.3). Thin wrapper around scripts/upstream-check.ts (Task D3), which owns all the logic:
+# read the Windows update feed, compare with upstream.json, download + extract + pre-flight the
+# new installer, then create/update ONE branch `upstream/<base>/v<version>.<build>` and ONE PR,
+# labelled `upstream-bump` + `automerge` (all checks green, `gh pr merge --auto --squash`) or
+# `needs-human`. Any unexpected failure files/updates a single `needs-human` issue and exits 1.
+# Exit codes: 0 up to date / success, 1 failure (issue filed), 2 bad arguments.
+#
+# WHY A PAT (secrets.UPSTREAM_BOT_TOKEN) AND NOT THE DEFAULT GITHUB_TOKEN
+# ------------------------------------------------------------------------
+# Pushes and PRs made with the workflow's own GITHUB_TOKEN do not trigger other workflows. A PR
+# opened by GITHUB_TOKEN therefore never gets a `pull_request` run of ci.yml, so the required
+# `ci-status` check never appears, so the auto-merge the bot arms can never be satisfied -- the
+# PR would sit open forever. The bot instead acts as the repository owner through a
+# fine-grained PAT scoped to this repository (Contents: read/write, Pull requests: read/write,
+# Workflows: read/write -- the last so a bump branch may carry workflow edits without the push
+# being refused; the bot itself never edits .github/). Setup lives in docs/BRANCH_PROTECTION.md.
+#
+# Consequently this workflow asks for NO write scopes on GITHUB_TOKEN (`contents: read`): every
+# write -- `git push -f origin HEAD:refs/heads/upstream/...`, `gh pr create/edit/merge`,
+# `gh issue create/comment` -- goes through the PAT. The checkout is made with the PAT so the
+# checkout's `origin` remote (persist-credentials) is what authenticates the bot's push, and
+# GH_TOKEN carries the same PAT to `gh`. The bot only ever writes to `upstream/<base>/...`
+# branches (it refuses any other push target) and never modifies sidecars.json.
+#
+# Untrusted/variable values (dispatch inputs) reach the script only via `env:`, never by
+# interpolating `${{ }}` into `run:`.
+
+name: upstream-check
+
+on:
+  schedule:
+    # Daily 04:17 UTC (spec §12.3): off-peak for both the GitHub Actions fleet and the upstream CDN.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      feed_url:
+        description: Upstream feed URL
+        default: https://download.qwen.ai/windows/x64/latest.yml
+        type: string
+      base_branch:
+        description: Branch to compare against and target with the PR
+        default: main
+        type: string
+      dry_run:
+        description: Print what would happen without pushing or opening a PR
+        default: false
+        type: boolean
+
+# Read-only on purpose -- see the header. The PAT does all the writing.
+permissions:
+  contents: read
+
+# One bot run at a time. A queued (not cancelled) run is fine: the script is idempotent and a
+# second run over the same feed finds the branch/PR up to date and only reconciles labels.
+concurrency:
+  group: upstream-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check upstream feed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      # Before checkout on purpose: actions/checkout with an empty `token:` fails with an
+      # unrelated-looking auth error. Forks (and a repo whose secret was rotated away) get a
+      # clear message instead.
+      - name: Require UPSTREAM_BOT_TOKEN
+        env:
+          HAS_TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::secrets.UPSTREAM_BOT_TOKEN is not set. The upstream bot needs a fine-grained PAT of the repository owner (see the header of this workflow and docs/BRANCH_PROTECTION.md); the default GITHUB_TOKEN cannot be used because PRs it opens never get a ci-status check. On a fork, disable this workflow or add the secret."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch || 'main' }}
+          token: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          # Keep the PAT in the checkout's origin remote: the script's `git push -f origin ...`
+          # relies on it (there is no other credential in this job).
+          persist-credentials: true
+          # The script re-fetches origin/<base> itself; full history keeps `git fetch`/`push`
+          # from a shallow clone out of the picture (the repo is small).
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install extraction tools (7z for the NSIS installer / app-64.7z)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full unzip
+
+      # Best-effort reuse of the ~200 MB installer download between nightly runs while a bump
+      # PR is open (the script re-runs its pre-flight checks every night). The key never hits
+      # exactly (run id), so restore falls back to the newest bot cache, then to a CI build's
+      # downloads cache; save below only happens when something was actually downloaded.
+      - name: Restore downloads cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache
+          key: downloads-bot-${{ github.run_id }}
+          restore-keys: |
+            downloads-bot-
+            downloads-
+
+      - run: npm ci
+
+      - name: Run upstream check
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FEED_URL: ${{ inputs.feed_url || 'https://download.qwen.ai/windows/x64/latest.yml' }}
+          BASE_BRANCH: ${{ inputs.base_branch || 'main' }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          args=(--feed-url "$FEED_URL" --base-branch "$BASE_BRANCH")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          npm run -s upstream-check -- "${args[@]}"
+
+      - name: Save downloads cache
+        # Skip on the (usual) up-to-date night, when nothing was downloaded and .cache is empty.
+        if: always() && hashFiles('.cache/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .cache
+          key: downloads-bot-${{ github.run_id }}
