@@ -62,7 +62,7 @@ interface Fake { deps: Deps; git: string[][]; gh: string[][]; writes: unknown[];
 function fakeDeps(o: {
   current?: UpstreamManifest; feedText?: string; fetchError?: string; preflight?: Preflight;
   prNumber?: string; comments?: string; authors?: string; autoMergeEnabledAt?: string; env?: NodeJS.ProcessEnv; files?: Record<string, string>; dirty?: string;
-  remoteTree?: string; closedUnmerged?: string; mergeError?: string;
+  remoteTree?: string; closedUnmerged?: string; mergeError?: string; baseCurrent?: UpstreamManifest;
 } = {}): Fake {
   const git: string[][] = []; const gh: string[][] = []; const writes: unknown[] = []; const logs: string[] = []; const errors: string[] = [];
   const preflight: Preflight = o.preflight ?? { checks: [pass(CHECK_DOWNLOAD), pass(CHECK_ELECTRON), pass(CHECK_PATCHES)], installerSize: 124954112, electronDetected: "35.1.4" };
@@ -75,6 +75,7 @@ function fakeDeps(o: {
     git: (args) => {
       git.push(args);
       if (args[0] === "status") return o.dirty ?? "";
+      if (args[0] === "show" && args[1] === "FETCH_HEAD:upstream.json") return JSON.stringify(o.baseCurrent ?? o.current ?? current44);
       if (args[0] === "ls-remote") return o.remoteTree === undefined ? "" : `deadbeef\trefs/heads/${args[3]}\n`;
       if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") return "tree-local\n";
       if (args[0] === "rev-parse" && args[1] === "FETCH_HEAD^{tree}") return `${o.remoteTree}\n`;
@@ -185,8 +186,8 @@ describe("upstream-check orchestration", () => {
   it("all checks pass: branch, commit, force-push, PR create, upstream-bump + automerge, auto-merge enabled", async () => {
     const f = fakeDeps({ current: current43, preflight: { checks: [pass(CHECK_DOWNLOAD), pass(CHECK_ELECTRON), pass(CHECK_PATCHES)], installerSize: 124954112, electronDetected: "35.1.4", pristineIndexJs: "/x/index.js" }, files: { "/x/index.js": "new" } });
     expect(await main(["--base-branch", "main"], f.deps)).toBe(0);
-    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "push"]);
-    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "main"]);
+    expect(gitOps(f)).toEqual(["status", "fetch", "show", "checkout", "add", "commit", "ls-remote", "push"]);
+    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "refs/heads/main"]);
     expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-q", "-B", "upstream/main/v1.0.3.44", "FETCH_HEAD"]);
     expect(f.git.find((a) => a[0] === "push")).toEqual(["push", "-f", "origin", "HEAD:refs/heads/upstream/main/v1.0.3.44"]);
     const commit = f.git.find((a) => a.includes("commit"))!;
@@ -256,19 +257,51 @@ describe("upstream-check orchestration", () => {
     expect(foreignAuthors("bot <b@x>\n\nA <a@x>\nbot <b@x>\nA <a@x>\n", "bot <b@x>")).toEqual(["A <a@x>"]);
     expect(foreignAuthors("", "bot <b@x>")).toEqual([]);
   });
-  it("re-run with an unchanged tree: no push, no label edits, no auto-merge, PR left as is", async () => {
+  it("re-run with an unchanged tree and auto-merge already armed: no push, no edits, nothing", async () => {
+    const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-local", autoMergeEnabledAt: "2026-09-15T04:20:00Z" });
+    expect(await main([], f.deps)).toBe(0);
+    expect(f.git.find((a) => a[0] === "push")).toBeUndefined();
+    expect(ghCalls(f, "pr", "edit")).toEqual([]);
+    expect(ghCalls(f, "pr", "merge")).toEqual([]);
+    expect(ghCalls(f, "pr", "comment")).toEqual([]);
+    expect(f.logs.join("\n")).toContain("unchanged on origin, nothing to push");
+    expect(f.logs.join("\n")).toContain("auto-merge already enabled");
+  });
+  it("re-run with an unchanged tree but auto-merge not armed: self-heals (merge --auto + labels), no push/body edit", async () => {
     const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-local" });
     expect(await main([], f.deps)).toBe(0);
-    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "fetch", "rev-parse", "rev-parse"]);
     expect(f.git.find((a) => a[0] === "push")).toBeUndefined();
-    expect(f.gh.map((a) => a.slice(0, 2))).toEqual([["pr", "list"], ["pr", "list"], ["pr", "view"]]);
-    expect(f.logs.join("\n")).toContain("unchanged on origin, nothing to push");
-    expect(f.logs.join("\n")).toContain("PR #12 left as is");
+    expect(ghCalls(f, "pr", "edit").find((a) => a.includes("--body"))).toBeUndefined();
+    expect(ghCalls(f, "pr", "merge")).toEqual([["pr", "merge", "12", "--repo", "sams-git-195/qwenstudio-linux", "--auto", "--squash"]]);
+    expect(addedLabels(f)).toEqual([LABEL_AUTOMERGE]);
+    expect(removedLabels(f)).toEqual([LABEL_NEEDS_HUMAN]);
+    expect(ghCalls(f, "pr", "comment")).toEqual([]);
+  });
+  it("re-run with an unchanged tree and a failing check: labels reflect needs-human, comment only if new", async () => {
+    const checks = [pass(CHECK_DOWNLOAD), fail(CHECK_ELECTRON, "36 != 35")];
+    const { marker } = renderFailureComment(checks);
+    const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-local", preflight: { checks }, comments: marker });
+    expect(await main([], f.deps)).toBe(0);
+    expect(f.git.find((a) => a[0] === "push")).toBeUndefined();
+    expect(addedLabels(f)).toEqual([LABEL_NEEDS_HUMAN]);
+    expect(removedLabels(f)).toEqual([LABEL_AUTOMERGE]);
+    expect(ghCalls(f, "pr", "comment")).toEqual([]);
+    const g = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-local", preflight: { checks }, comments: "" });
+    expect(await main([], g.deps)).toBe(0);
+    expect(ghCalls(g, "pr", "comment")).toHaveLength(1);
+  });
+  it("reads the authoritative current version from the fetched base and stops if it already has the bump", async () => {
+    const f = fakeDeps({ current: current43, baseCurrent: current44 });
+    expect(await main([], f.deps)).toBe(0);
+    expect(gitOps(f)).toEqual(["status", "fetch", "show"]);
+    expect(f.writes).toEqual([]);
+    expect(ghCalls(f, "pr", "create")).toEqual([]);
+    expect(f.logs.join("\n")).toContain("Up to date (feed 1.0.3.44, origin/main 1.0.3.44)");
   });
   it("re-run with a changed tree: force-pushes and updates the PR", async () => {
     const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-remote-old" });
     expect(await main([], f.deps)).toBe(0);
-    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "fetch", "rev-parse", "rev-parse", "push"]);
+    expect(gitOps(f)).toEqual(["status", "fetch", "show", "checkout", "add", "commit", "ls-remote", "fetch", "rev-parse", "rev-parse", "push"]);
     expect(ghCalls(f, "pr", "edit").find((a) => a.includes("--title"))!.slice(0, 3)).toEqual(["pr", "edit", "12"]);
     expect(ghCalls(f, "pr", "merge")[0].slice(0, 3)).toEqual(["pr", "merge", "12"]);
   });
@@ -303,8 +336,9 @@ describe("upstream-check orchestration", () => {
     expect(maskSecrets(`x ${tok} y github_pat_11AAAA_bbbb z ghs_short`, {})).toBe("x *** y *** z ***");
     expect(maskSecrets("token=s3cretvalue!", { GH_TOKEN: "s3cretvalue!" })).toBe("token=***");
     expect(maskSecrets("nothing here", { GH_TOKEN: "abc" })).toBe("nothing here");
-    const f = fakeDeps({ fetchError: `HTTP 401 for https://x?token=${tok}`, env: { GH_TOKEN: tok } });
-    expect(await main([], f.deps)).toBe(1);
+    expect(maskSecrets("a=AAAAAAAAAA b=BBBBBBBBBB", { GH_TOKEN: "AAAAAAAAAA", GITHUB_TOKEN: "BBBBBBBBBB" })).toBe("a=*** b=***");
+    const f = fakeDeps({ fetchError: `HTTP 401`, env: { GH_TOKEN: tok } });
+    expect(await main(["--feed-url", `https://x/latest.yml?token=${tok}`], f.deps)).toBe(1);
     const issue = ghCalls(f, "issue", "create")[0];
     expect(issue.join(" ")).not.toContain(tok);
     expect(issue[issue.length - 1]).toContain("token=***");
@@ -313,7 +347,7 @@ describe("upstream-check orchestration", () => {
   it("uses the base branch in the branch name and PR base", async () => {
     const f = fakeDeps({ current: current43 });
     expect(await main(["--base-branch", "qa/bump-sim"], f.deps)).toBe(0);
-    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "qa/bump-sim"]);
+    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "refs/heads/qa/bump-sim"]);
     expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-q", "-B", "upstream/qa/bump-sim/v1.0.3.44", "FETCH_HEAD"]);
     const create = ghCalls(f, "pr", "create")[0];
     expect(create[create.indexOf("--base") + 1]).toBe("qa/bump-sim");

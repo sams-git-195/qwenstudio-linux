@@ -5,8 +5,10 @@
 // Safety properties (see the report for the reasoning):
 //   - never writes to `main` (or any base branch): the only branch it touches is
 //     `upstream/<base>/v<version>.<build>`, and it refuses to push anywhere else;
-//   - idempotent: re-runs reset that branch from the checked-out base, force-push it, and
-//     update the existing open PR instead of opening a duplicate;
+//   - idempotent: every run rebuilds that branch from the freshly fetched `origin/<base>`,
+//     re-checks that the base does not already carry the bump, pushes only if the resulting
+//     tree differs from what is on the remote branch, and reuses the existing open PR (only
+//     reconciling labels/auto-merge on unchanged re-runs) instead of opening a duplicate;
 //   - `--dry-run` performs every check but makes no git/gh/worktree writes;
 //   - `sidecars.json` is never modified -- an Electron change is reported and labelled
 //     `needs-human`;
@@ -357,8 +359,9 @@ function fixtureDiffers(deps: Deps, pristineIndexJs: string | undefined): boolea
 /** Masks the bot token (and anything shaped like a GitHub token) before text reaches a public issue/comment/log. */
 export function maskSecrets(text: string, env: NodeJS.ProcessEnv): string {
   let out = text;
-  const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
-  if (token && token.length >= 8) out = out.split(token).join("***");
+  for (const token of [env.GH_TOKEN, env.GITHUB_TOKEN]) {
+    if (token && token.length >= 8) out = out.split(token).join("***");
+  }
   return out.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]+|\bgithub_pat_[A-Za-z0-9_]+/g, "***");
 }
 
@@ -369,14 +372,14 @@ function reportFailure(deps: Deps, opts: CliOptions, repo: string, reason: strin
   deps.error(`${title}\n${detail}`);
   if (opts.dryRun) { deps.error("[dry-run] would open/update a needs-human issue with the above"); return 1; }
   const runUrl = `${deps.env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}/actions/runs/${deps.env.GITHUB_RUN_ID ?? "local"}`;
-  const body = [
+  const body = maskSecrets([
     `The scheduled upstream check failed.`, ``,
     `**Upstream version/build:** ${feed ? `${feed.version}.${feed.build}` : "unknown (failed while reading the feed)"}`,
     `**Feed URL:** ${opts.feedFile ?? opts.feedUrl}`,
     `**What failed:** other -- ${reason}`, ``,
     `**Logs:**`, "```", detail.slice(-4000), "```", ``,
     `Run: ${runUrl}`,
-  ].join("\n");
+  ].join("\n"), deps.env);
   try {
     const existing = deps.gh(["issue", "list", "--repo", repo, "--state", "open", "--search", `in:title "${title}"`,
       "--json", "number,title", "--jq", `.[] | select(.title == "${title}") | .number`]).trim().split("\n")[0];
@@ -434,9 +437,17 @@ function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): number
   const dirty = deps.git(["status", "--porcelain", "--untracked-files=no"]).trim();
   if (dirty) throw new Error(`working tree has uncommitted changes; refusing to run:\n${dirty}`);
 
+  // Authoritative comparison against the freshly fetched base (the pre-fetch one in main() is
+  // only a cheap fast-path): if the base already carries this bump, there is nothing to do.
+  deps.git(["fetch", "--quiet", "origin", `refs/heads/${opts.base}`]);
+  const baseCurrent = validateUpstream(JSON.parse(deps.git(["show", "FETCH_HEAD:upstream.json"])));
+  if (compareUpstream(plan.feed, baseCurrent) <= 0) {
+    deps.log(`Up to date (feed ${plan.feed.version}.${plan.feed.build}, origin/${opts.base} ${baseCurrent.version}.${baseCurrent.build})`);
+    return 0;
+  }
+
   // Branch from the remote base explicitly (never from whatever HEAD happens to be), write the
   // bump, commit. Re-runs therefore always produce the same tree for the same feed + base.
-  deps.git(["fetch", "--quiet", "origin", opts.base]);
   deps.git(["checkout", "-q", "-B", plan.branch, "FETCH_HEAD"]); // FETCH_HEAD: independent of the clone's refspec config
   const paths = deps.writeWorkspace({ manifest: plan.next, changelogLine: plan.changelogLine, pristineIndexJs: plan.pristineIndexJs });
   deps.git(["add", "--", ...paths]);
@@ -450,15 +461,19 @@ function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): number
     deps.git(["fetch", "--quiet", "origin", plan.branch]);
     unchanged = deps.git(["rev-parse", "HEAD^{tree}"]).trim() === deps.git(["rev-parse", "FETCH_HEAD^{tree}"]).trim();
   }
+  // Unchanged tree + open PR: no push, no body edit, no new comment -- but labels and auto-merge
+  // are still reconciled below so a PR whose state drifted (e.g. auto-merge never armed) self-heals.
+  const reconcileOnly = unchanged && Boolean(pr);
   if (unchanged) {
     deps.log(`${plan.branch}: unchanged on origin, nothing to push`);
-    if (pr) { deps.log(`PR #${pr} left as is`); return 0; }
   } else {
     deps.git(["push", "-f", "origin", `HEAD:refs/heads/${plan.branch}`]);
     deps.log(`pushed ${plan.branch}`);
   }
 
-  if (pr) {
+  if (reconcileOnly) {
+    deps.log(`PR #${pr}: reconciling labels/auto-merge only`);
+  } else if (pr) {
     deps.gh(["pr", "edit", pr, "--repo", repo, "--title", plan.title, "--body", body]);
     deps.log(`updated existing PR #${pr}`);
   } else {
@@ -474,7 +489,7 @@ function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): number
     for (const l of add) deps.gh(["pr", "edit", pr, "--repo", repo, "--add-label", l], true);
     for (const l of remove) deps.gh(["pr", "edit", pr, "--repo", repo, "--remove-label", l], true);
   };
-  label([LABEL_BUMP], []);
+  if (!reconcileOnly) label([LABEL_BUMP], []);
 
   if (!plan.decision.autoMerge) {
     deps.gh(["pr", "merge", pr, "--repo", repo, "--disable-auto"], true);
@@ -487,6 +502,7 @@ function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): number
   // All checks passed: arm auto-merge FIRST; the automerge label only ever reflects a PR that
   // really has it. Re-enabling on a PR that already has it is rejected by GitHub, so skip then.
   const armed = deps.gh(["pr", "view", pr, "--repo", repo, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest.enabledAt // empty"]).trim();
+  if (armed && reconcileOnly) { deps.log(`PR #${pr}: auto-merge already enabled (${armed}); nothing to do`); return 0; }
   if (!armed) {
     try { deps.gh(["pr", "merge", pr, "--repo", repo, "--auto", "--squash"]); }
     catch (e) {
