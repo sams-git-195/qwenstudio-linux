@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync, existsSync, rmSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 import * as asar from "@electron/asar";
 import { run } from "./lib/exec.js";
 import { debControl, debFiles, debExtract } from "./lib/deb.js";
