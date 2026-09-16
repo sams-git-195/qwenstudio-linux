@@ -7,9 +7,12 @@ const read = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 describe("governance documents", () => {
   it("README has the required notices", () => {
     const md = read("README.md");
+    const sc = readSidecars();
     for (const s of ["not affiliated", "@ali/aes-tracker", "telemetry", "proprietary", "libfuse2", "--ozone-platform-hint=auto", "SECURITY.md", "CONTRIBUTING.md", "sudo apt install ./", "sudo dnf install ./", "--appimage-extract"]) {
       expect(md, `README.md must mention ${s}`).toContain(s);
     }
+    // docs/RELEASING.md tells maintainers this sentence must follow an Electron bump; enforce it here.
+    expect(md, "README.md must name the pinned Electron runtime").toContain(`Electron ${sc.electron.version} Linux runtime`);
   });
   it("LICENSE is MIT for the wrapper only", () => {
     expect(read("LICENSE")).toContain("MIT License");
