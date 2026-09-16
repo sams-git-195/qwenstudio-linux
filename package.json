@@ -4,6 +4,7 @@
   "private": true,
   "description": "Unofficial Linux packaging of Qwen Studio (Alibaba's desktop client for chat.qwen.ai)",
   "homepage": "https://github.com/sams-git-195/qwenstudio-linux",
+  "repository": "github:sams-git-195/qwenstudio-linux",
   "license": "MIT",
   "author": "sams-git-195 <samheard95@gmail.com>",
   "type": "module",

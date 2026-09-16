@@ -26,9 +26,11 @@ on:
 permissions:
   contents: read
 
+# Superseded PR pushes cancel the previous run; pushes to main (and dispatches) are never
+# cancelled, so a merge's full build always completes and release.yml sees a finished ci run.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -92,6 +94,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:unit
+
+      # Consumes .markdownlint.yaml. Pinned version: an unpinned linter would fail CI whenever
+      # upstream adds a rule. docs/superpowers/ (design spec + plan, historical) is excluded;
+      # node_modules exists here (npm ci ran above) and must be excluded or every package README
+      # gets linted; build/dist/.cache never exist in this job but are excluded for parity with
+      # running the exact same command locally after a build.
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md" "!node_modules" "!build" "!dist" "!.cache" "!docs/superpowers/**"
 
       # electron-updater was bumped 6.6.2 -> 6.8.9 and js-yaml 4.1.0 -> 4.3.2 (see
       # package.json / commit "build: bump electron-updater/js-yaml to clear audit") specifically
