@@ -1,0 +1,4 @@
+# markdownlint config (https://github.com/DavidAnson/markdownlint).
+# Only MD013 (line length) is relaxed: these docs wrap prose at readable points rather than a
+# fixed column, matching every other .md file already in this repository.
+MD013: false
