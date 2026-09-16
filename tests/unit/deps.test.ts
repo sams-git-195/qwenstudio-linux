@@ -4,10 +4,12 @@ import { execFileSync } from "node:child_process";
 
 const exe = "build/linux-unpacked/qwen-studio";
 const base = JSON.parse(readFileSync("packaging/electron-builder.base.json", "utf8"));
-const table: Record<string, string> = JSON.parse(readFileSync("tests/fixtures/soname-to-deb.json", "utf8"));
+const table: Record<string, { deb: string; rpm: string }> = JSON.parse(
+  readFileSync("tests/fixtures/soname-to-packages.json", "utf8"),
+);
 
-describe.skipIf(!existsSync(exe))("deb depends cover ldd of the Electron binary (needs build/linux-unpacked)", () => {
-  it("every direct runtime soname maps to a declared deb dependency", () => {
+describe.skipIf(!existsSync(exe))("deb/rpm depends cover ldd of the Electron binary (needs build/linux-unpacked)", () => {
+  it("every direct runtime soname maps to a declared deb AND rpm dependency", () => {
     // `ldd` reports the full *transitive* closure of resolved shared libraries, not just the
     // sonames qwen-studio itself links against. On a fully-loaded desktop host (e.g. Fedora, used
     // to capture this), libraries like libgbm.so.1 or libgtk-3.so.0 pull in dozens of further
@@ -27,20 +29,26 @@ describe.skipIf(!existsSync(exe))("deb depends cover ldd of the Electron binary 
     const readelfOut = execFileSync("readelf", ["-d", exe], { encoding: "utf8" });
     const needed = [...readelfOut.matchAll(/\(NEEDED\)\s+Shared library: \[(.+?)\]/g)].map((m) => m[1]);
 
+    // ld-linux-x86-64.so.2 (the dynamic linker) genuinely IS a DT_NEEDED entry in this binary
+    // (confirmed via `readelf -d`) - it isn't excluded here because it's somehow not a real
+    // dependency. It's excluded because `ldd` prints it without a "=>" (e.g.
+    // `/lib64/ld-linux-x86-64.so.2 (0x...)`), so it never lands in `resolved` above and the
+    // needed/resolved intersection below naturally drops it, same as any other unresolved entry.
     const sonames = needed.filter((so) => resolved.has(so));
     const unmapped: string[] = [];
     const undeclared: string[] = [];
     for (const so of sonames) {
       if (existsSync(`build/linux-unpacked/${so}`)) continue; // bundled with Electron
-      const pkg = table[so];
-      if (!pkg) {
+      const entry = table[so];
+      if (!entry) {
         unmapped.push(so);
         continue;
       }
-      if (!base.deb.depends.includes(pkg)) undeclared.push(`${so} -> ${pkg}`);
+      if (!base.deb.depends.includes(entry.deb)) undeclared.push(`${so} -> deb:${entry.deb}`);
+      if (!base.rpm.depends.includes(entry.rpm)) undeclared.push(`${so} -> rpm:${entry.rpm}`);
     }
-    expect(unmapped, "add these sonames to tests/fixtures/soname-to-deb.json").toEqual([]);
-    expect(undeclared, "add these packages to deb.depends in packaging/electron-builder.base.json").toEqual([]);
+    expect(unmapped, "add these sonames to tests/fixtures/soname-to-packages.json").toEqual([]);
+    expect(undeclared, "add these packages to deb.depends/rpm.depends in packaging/electron-builder.base.json").toEqual([]);
   });
 });
 

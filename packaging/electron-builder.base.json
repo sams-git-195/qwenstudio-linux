@@ -39,7 +39,7 @@
       "gtk3", "libnotify", "nss", "libXScrnSaver", "libXtst", "xdg-utils", "at-spi2-core", "libuuid", "libsecret",
       "alsa-lib", "libdrm", "mesa-libgbm", "libxkbcommon", "at-spi2-atk", "atk", "cups-libs", "dbus-libs", "expat",
       "libX11", "libXcomposite", "libXdamage", "libXext", "libXfixes", "libXrandr", "pango", "cairo", "glib2", "nspr",
-      "libxcb", "libgcc", "libstdc++", "systemd-libs"
+      "libxcb", "libgcc", "libstdc++", "systemd-libs", "glibc"
     ]
   },
   "appImage": {}
