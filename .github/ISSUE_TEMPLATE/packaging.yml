@@ -1,0 +1,22 @@
+name: Packaging problem
+description: Dependencies, desktop entry, icons, file layout
+labels: [packaging]
+body:
+  - type: dropdown
+    attributes:
+      label: Package format
+      options: [deb, rpm, AppImage]
+    validations: { required: true }
+  - type: input
+    attributes:
+      label: Distribution and version
+    validations: { required: true }
+  - type: dropdown
+    attributes:
+      label: Area
+      options: [dependencies, desktop entry / menu, icon, file layout / permissions, uninstall, other]
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: Details and output of `dpkg -s qwen-studio` or `rpm -qi qwen-studio`
+      render: shell

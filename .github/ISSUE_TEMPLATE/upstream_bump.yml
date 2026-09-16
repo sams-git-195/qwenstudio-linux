@@ -1,0 +1,22 @@
+name: Upstream bump problem
+description: A new upstream version failed to package (used by humans and by the bot)
+labels: [upstream-bump]
+body:
+  - type: input
+    attributes:
+      label: Upstream version and build
+      placeholder: 1.0.4.12
+    validations: { required: true }
+  - type: input
+    attributes:
+      label: Feed URL
+      value: https://download.qwen.ai/windows/x64/latest.yml
+  - type: dropdown
+    attributes:
+      label: What failed
+      options: [patch does not apply, Electron version changed, installer download/verification, other]
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: Logs
+      render: shell

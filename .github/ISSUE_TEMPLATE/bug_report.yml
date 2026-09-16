@@ -1,0 +1,37 @@
+name: Bug report
+description: The Linux package misbehaves (install, launch, crash, updater)
+labels: [bug]
+body:
+  - type: checkboxes
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I understand this is unofficial packaging, not affiliated with Alibaba.
+          required: true
+  - type: dropdown
+    attributes:
+      label: Package format
+      options: [deb, rpm, AppImage]
+    validations: { required: true }
+  - type: input
+    attributes:
+      label: Distribution and version
+      placeholder: Ubuntu 24.04 / Fedora 41
+    validations: { required: true }
+  - type: dropdown
+    attributes:
+      label: Session type
+      options: [Wayland, X11, unsure]
+  - type: input
+    attributes:
+      label: App version (Help/About or `dpkg -s qwen-studio` / `rpm -q qwen-studio`)
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: Output of running the app from a terminal
+      description: "`ELECTRON_ENABLE_LOGGING=1 qwen-studio` (or the AppImage) — paste the output"
+      render: shell
