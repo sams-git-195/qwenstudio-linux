@@ -61,32 +61,59 @@ export function renderReleaseHeader(v: DerivedVersions, up: UpstreamManifest, sc
   ].join("\n");
 }
 
+const USAGE = "usage: changelog --add <line> | --finalize <tag> | --release-notes <SHA256SUMS>";
+
+export type ParsedArgs =
+  | { mode: "add"; line: string }
+  | { mode: "finalize"; tag: string }
+  | { mode: "release-notes"; file: string };
+
+/** Validates CLI args, throwing `USAGE` for an unrecognized flag or a missing required value. */
+export function parseArgs(argv: string[]): ParsedArgs {
+  if (argv[0] === "--add") {
+    if (!argv[1]) throw new Error(USAGE);
+    return { mode: "add", line: argv[1] };
+  }
+  if (argv[0] === "--finalize") {
+    if (!argv[1]) throw new Error(USAGE);
+    return { mode: "finalize", tag: argv[1] };
+  }
+  if (argv[0] === "--release-notes") {
+    if (!argv[1]) throw new Error(USAGE);
+    return { mode: "release-notes", file: argv[1] };
+  }
+  throw new Error(USAGE);
+}
+
 export function main(argv = process.argv.slice(2)): void {
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseArgs(argv);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+    return;
+  }
   const changelogPath = path.join(ROOT, "CHANGELOG.md");
   const md = readFileSync(changelogPath, "utf8");
-  if (argv[0] === "--add") {
-    writeFileSync(changelogPath, addUnreleased(md, argv[1]));
+  if (parsed.mode === "add") {
+    writeFileSync(changelogPath, addUnreleased(md, parsed.line));
     console.log("CHANGELOG.md: added unreleased entry");
     return;
   }
-  if (argv[0] === "--finalize") {
+  if (parsed.mode === "finalize") {
     const date = new Date().toISOString().slice(0, 10);
-    writeFileSync(changelogPath, finalize(md, argv[1], date));
-    console.log(`CHANGELOG.md: finalized ${argv[1]} (${date})`);
+    writeFileSync(changelogPath, finalize(md, parsed.tag, date));
+    console.log(`CHANGELOG.md: finalized ${parsed.tag} (${date})`);
     return;
   }
-  if (argv[0] === "--release-notes") {
-    const up = readUpstream();
-    const v = deriveVersions(up);
-    const header = renderReleaseHeader(v, up, readSidecars(), readFileSync(argv[1], "utf8"));
-    const items = unreleasedSection(md) || WRAPPER_ONLY;
-    mkdirSync(BUILD_DIR, { recursive: true });
-    writeFileSync(path.join(BUILD_DIR, "notes.md"), `${header}\n### Changes\n\n${items}\n`);
-    console.log("wrote build/notes.md");
-    return;
-  }
-  console.error("usage: changelog --add <line> | --finalize <tag> | --release-notes <SHA256SUMS>");
-  process.exit(1);
+  const up = readUpstream();
+  const v = deriveVersions(up);
+  const header = renderReleaseHeader(v, up, readSidecars(), readFileSync(parsed.file, "utf8"));
+  const items = unreleasedSection(md) || WRAPPER_ONLY;
+  mkdirSync(BUILD_DIR, { recursive: true });
+  writeFileSync(path.join(BUILD_DIR, "notes.md"), `${header}\n### Changes\n\n${items}\n`);
+  console.log("wrote build/notes.md");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
