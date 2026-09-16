@@ -1,0 +1,10 @@
+# CodeQL scan config for the codeql.yml workflow (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# §11.6, §12.1). Excludes the vendored upstream Electron `out/main/index.js` fixture copied into
+# tests/fixtures/app-pristine/ (spec §11.1's patch.test.ts fixture) from analysis: it's third-party
+# code this project doesn't author or control, patched only minimally (see patches/), so scanning
+# it just adds noise/false attribution to findings that belong to Alibaba's upstream build, not this
+# repo's own code.
+name: "qwen-studio-linux CodeQL config"
+
+paths-ignore:
+  - tests/fixtures/**

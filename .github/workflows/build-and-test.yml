@@ -15,8 +15,9 @@
 #   - `install-matrix` -- spec §11.4 (needs: build). One job per matrix leg, named
 #                          `${{ matrix.leg }}` (deb-ubuntu-22.04, deb-ubuntu-24.04, deb-debian-12,
 #                          rpm-fedora-40, rpm-fedora-41, appimage-ubuntu-22.04,
-#                          appimage-fedora-41). On failure each leg uploads artifact
-#                          `smoke-log-<leg>`.
+#                          appimage-fedora-41). Each leg always uploads artifact
+#                          `smoke-log-<leg>` (pass or fail; empty only if the leg died before
+#                          smoke.sh ran at all).
 
 name: build-and-test
 
@@ -33,6 +34,7 @@ jobs:
     # (also update the install-matrix `deb-ubuntu-24.04` leg's rationale comment if so, since that
     # leg exists specifically to prove the 24.04 t64 package renames are handled).
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -53,8 +55,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq p7zip-full unzip rpm desktop-file-utils libfuse2 xvfb xauth cpio pipx binutils xz-utils zstd
 
-      - name: Cache downloads
-        uses: actions/cache@v4
+      - name: Restore downloads cache
+        uses: actions/cache/restore@v4
         with:
           path: .cache
           key: downloads-${{ hashFiles('upstream.json', 'sidecars.json') }}
@@ -102,6 +104,12 @@ jobs:
 
       - name: appimagelint (advisory)
         continue-on-error: true
+        # Explicit shell so `-eo pipefail` is in effect (GitHub Actions' default `bash` shell is
+        # already `-eo pipefail`, but this is made explicit rather than relied on): without
+        # pipefail, `appimagelint ... | tee` always exits 0 from the `tee` half regardless of
+        # appimagelint's own exit code, silently defeating even the advisory continue-on-error
+        # semantics (a real appimagelint crash would look identical to a clean advisory run).
+        shell: bash
         run: |
           pipx install git+https://github.com/TheAssassin/appimagelint@27f5d08808fd2a96543f4efb72e1b824b3e32652
           ~/.local/bin/appimagelint dist/*.AppImage | tee appimagelint.txt
@@ -112,6 +120,7 @@ jobs:
           name: appimagelint-report
           path: appimagelint.txt
           if-no-files-found: ignore
+          overwrite: true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,12 +128,25 @@ jobs:
           path: dist/
           retention-days: 7
           if-no-files-found: error
+          overwrite: true
+
+      # Runs even when an earlier step (build/verify/test/lint) failed, so the ~300 MB of
+      # upstream/sidecar downloads under .cache/ are still saved for the next run instead of being
+      # re-downloaded on every red build. Same key as the restore step above (a cache is immutable
+      # once saved under a given key, so this is a no-op if that exact key was already a hit).
+      - name: Save downloads cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache
+          key: downloads-${{ hashFiles('upstream.json', 'sidecars.json') }}
 
   install-matrix:
     name: ${{ matrix.leg }}
     needs: build
     # Fallback: ubuntu-24.04 if 22.04 is retired (see the `build` job's runs-on comment).
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -152,11 +174,16 @@ jobs:
             -e SMOKE_LOG=/logs/smoke.log \
             "${{ matrix.image }}" bash /tests/install/install-and-smoke.sh "${{ matrix.format }}"
 
-      # Spec §11.5 step 7: "always upload it as a job artifact" -- if-no-files-found: ignore keeps
-      # this a no-op on a passing leg where no smoke.log was ever written to the mounted /logs dir.
+      # Spec §11.5 step 7: "always upload it as a job artifact". smoke.sh writes $LOG as soon as it
+      # launches the app (`rm -f "$LOG"` then redirects the app's own stdout/stderr into it), well
+      # before any pass/fail assertion runs -- so smoke.log exists for every leg that got far
+      # enough to invoke smoke.sh, pass or fail. `if-no-files-found: ignore` only covers legs that
+      # died *before* smoke.sh ran at all (e.g. a package-install failure or a layout assertion in
+      # install-and-smoke.sh's assert_installed_layout, both of which happen earlier in the script).
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: smoke-log-${{ matrix.leg }}
           path: logs/
           if-no-files-found: ignore
+          overwrite: true
