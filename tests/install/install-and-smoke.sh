@@ -46,6 +46,7 @@ case "$ID" in
 esac
 
 WORK="$(mktemp -d)"; cd "$WORK"
+trap 'rm -rf "$WORK"' EXIT
 
 assert_installed_layout() {
   echo "== install assertions"
@@ -60,6 +61,14 @@ assert_installed_layout() {
   echo "layout ok"
 }
 
+# `[ ! -e path ]` alone is vacuous here: -e follows symlinks, and since the removed package's
+# /opt/Qwen Studio/qwen-studio target is already gone, a leftover DANGLING /usr/bin/qwen-studio
+# symlink reads as "-e false" and would silently pass. -L checks the symlink itself, independent
+# of whether its target exists, so both must be clear.
+assert_symlink_gone() {
+  [ ! -e /usr/bin/qwen-studio ] && [ ! -L /usr/bin/qwen-studio ] || { echo "/usr/bin/qwen-studio symlink still present after removal"; exit 1; }
+}
+
 case "$FORMAT" in
   deb)
     apt-get install -y -qq "$DIST"/qwen-studio_*.deb >/dev/null
@@ -67,7 +76,7 @@ case "$FORMAT" in
     bash "$TESTS/smoke/smoke.sh" "/opt/Qwen Studio/qwen-studio" "/opt/Qwen Studio/resources"
     apt-get remove -y -qq qwen-studio >/dev/null
     [ ! -e "/opt/Qwen Studio" ] || { echo "/opt/Qwen Studio still present after removal"; ls -la "/opt/Qwen Studio"; exit 1; }
-    [ ! -e /usr/bin/qwen-studio ] || { echo "/usr/bin/qwen-studio symlink still present after removal"; exit 1; }
+    assert_symlink_gone
     ;;
   rpm)
     dnf install -y -q "$DIST"/qwen-studio-*.rpm >/dev/null
@@ -75,7 +84,7 @@ case "$FORMAT" in
     bash "$TESTS/smoke/smoke.sh" "/opt/Qwen Studio/qwen-studio" "/opt/Qwen Studio/resources"
     dnf remove -y -q qwen-studio >/dev/null
     [ ! -e "/opt/Qwen Studio" ] || { echo "/opt/Qwen Studio still present after removal"; exit 1; }
-    [ ! -e /usr/bin/qwen-studio ] || { echo "/usr/bin/qwen-studio symlink still present after removal"; exit 1; }
+    assert_symlink_gone
     ;;
   appimage)
     cp "$DIST"/qwen-studio-*.AppImage ./app.AppImage && chmod +x ./app.AppImage
