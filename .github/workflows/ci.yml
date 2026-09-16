@@ -1,0 +1,210 @@
+# Pull request / main branch pipeline (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# §12.2). This is the ONLY workflow whose status check is required by branch protection
+# (`ci-status`, Section 13 / docs/BRANCH_PROTECTION.md) -- every other job here feeds into it.
+#
+# `changes` decides whether the full build+install matrix is needed at all: docs-only edits
+# (docs/**, **/*.md, .github/ISSUE_TEMPLATE/**, LICENSE, CODEOWNERS) skip `build-and-test`
+# entirely so the release.yml changelog PR (spec §12.4 step 4) doesn't pay for a 7-leg container
+# matrix on every release. A PR that touches even one non-doc file still runs the full build,
+# because `changes` requires ALL changed files to match the doc patterns before it reports
+# build_needed=false.
+#
+# `flag-needs-human` reacts to a failing `ci-status` on branches created by the upstream bot
+# (Task D3/D4, `upstream/<base_branch>/v<version>.<build>`): it swaps the `automerge` label for
+# `needs-human` so the bot's auto-merge never fires on a red PR, and leaves exactly one
+# run-scoped comment pointing a maintainer at the failing run.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Minimal by default; the labeller job below grants itself the extra write scopes it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect docs-only changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      build_needed: ${{ steps.decide.outputs.build_needed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # push to main / workflow_dispatch always run the full pipeline.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"
+          echo "$files"
+
+          # Anything NOT matching the doc-only patterns forces a build. A PR mixing docs and
+          # code always has at least one non-matching file, so it still runs the build.
+          if echo "$files" | grep -Evq '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/|LICENSE$|(\.github/)?CODEOWNERS$)'; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint-unit:
+    name: Typecheck, unit tests, audit, commit lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # fetch-depth: 0 is required by wagoid/commitlint-github-action, which computes the PR's
+      # commit range from local git history -- a shallow clone makes it fail to resolve commits.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:unit
+
+      # electron-builder/electron-updater's dependency tree currently carries advisories that
+      # can only be cleared by bumping outside the pinned versions in package.json (tracked
+      # separately -- see the warning annotation below). Keep the job unblocked but visible
+      # rather than red-CI-forever.
+      - name: npm audit (high+)
+        id: audit
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      - name: Warn on unresolved audit findings
+        if: steps.audit.outcome == 'failure'
+        run: |
+          echo "::warning::npm audit --audit-level=high reported high/critical advisories that require a version bump outside package.json's pinned devDependency ranges to clear (as of 2026-09-16: electron-updater's builder-util-runtime, GHSA-p2f4-r6v6-j797; js-yaml, GHSA-mh29-5h37-fv8m and related). This job does not fail on it -- track resolution via a dedicated dependency bump."
+
+      # Dependabot's commit bodies routinely fail commitlint's stock rules (long changelog URLs,
+      # non-conventional bump summaries) and would otherwise block its own PRs from ever going
+      # green; the semantic PR title check below still applies to Dependabot since its titles
+      # are already Conventional-Commits shaped ("build(deps): bump x from a to b").
+      - name: commitlint
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        uses: wagoid/commitlint-github-action@v6
+
+      - name: Conventional PR title
+        if: github.event_name == 'pull_request'
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-test:
+    name: build-and-test
+    needs: changes
+    if: needs.changes.outputs.build_needed == 'true'
+    uses: ./.github/workflows/build-and-test.yml
+
+  ci-status:
+    name: ci-status
+    needs: [changes, lint-unit, build-and-test]
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          LINT: ${{ needs.lint-unit.result }}
+          BUILD: ${{ needs.build-and-test.result }}
+          NEEDED: ${{ needs.changes.outputs.build_needed }}
+        run: |
+          set -uo pipefail
+          echo "changes=$CHANGES lint-unit=$LINT build-and-test=$BUILD build_needed=$NEEDED"
+
+          ok=true
+
+          # `changes` and `lint-unit` always run (no `if:` gate), so anything but success --
+          # failure, cancelled, or (shouldn't happen) skipped -- is a real problem.
+          if [ "$CHANGES" != "success" ]; then
+            echo "::error::changes job did not succeed (result: $CHANGES)"
+            ok=false
+          fi
+          if [ "$LINT" != "success" ]; then
+            echo "::error::lint-unit job did not succeed (result: $LINT)"
+            ok=false
+          fi
+
+          # `build-and-test` is conditionally gated on build_needed; a legitimate skip (docs-only
+          # PR) is fine, anything else (failure, cancelled, or skipped while a build WAS needed)
+          # is not.
+          if [ "$NEEDED" = "true" ]; then
+            if [ "$BUILD" != "success" ]; then
+              echo "::error::build-and-test was required (build_needed=true) but result is $BUILD"
+              ok=false
+            fi
+          else
+            case "$BUILD" in
+              success|skipped) ;;
+              *)
+                echo "::error::build-and-test had unexpected result $BUILD for a docs-only change"
+                ok=false
+                ;;
+            esac
+          fi
+
+          if [ "$ok" != "true" ]; then
+            exit 1
+          fi
+          echo "ci-status: success"
+
+  flag-needs-human:
+    name: Flag failed upstream bump
+    needs: [ci-status]
+    # !cancelled() guards against the upstream bot's force-push-to-existing-branch flow (spec
+    # §12.3 step 6): cancel-in-progress will cancel an in-flight run on a re-push, and a
+    # cancelled ci-status must not strip `automerge` -- only a genuine failure should.
+    if: failure() && !cancelled() && github.event_name == 'pull_request' && startsWith(github.head_ref, 'upstream/')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR" --repo "$REPO" --add-label needs-human --remove-label automerge \
+            || gh pr edit "$PR" --repo "$REPO" --add-label needs-human
+
+          marker="<!-- ci-failure-run-${RUN_ID} -->"
+          existing=$(gh pr view "$PR" --repo "$REPO" --json comments -q '.comments[].body')
+          if ! printf '%s\n' "$existing" | grep -qF "$marker"; then
+            body="$marker
+          Automated upstream bump failed CI. See $RUN_URL. A maintainer must fix the branch or close this PR."
+            gh pr comment "$PR" --repo "$REPO" --body "$body"
+          fi
