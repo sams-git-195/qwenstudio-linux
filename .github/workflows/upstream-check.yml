@@ -109,7 +109,7 @@ jobs:
       # exactly (run id), so restore falls back to the newest bot cache, then to a CI build's
       # downloads cache; save below only happens when something was actually downloaded.
       - name: Restore downloads cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .cache
           key: downloads-bot-${{ github.run_id }}
@@ -148,7 +148,7 @@ jobs:
       - name: Save downloads cache
         # Skip on the (usual) up-to-date night, when nothing was downloaded and .cache is empty.
         if: always() && hashFiles('.cache/**') != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .cache
           key: downloads-bot-${{ github.run_id }}
