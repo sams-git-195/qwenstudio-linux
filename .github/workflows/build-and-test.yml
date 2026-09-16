@@ -60,7 +60,7 @@ jobs:
           sudo apt-get install -y -qq p7zip-full unzip rpm desktop-file-utils libfuse2 cpio pipx binutils xz-utils zstd
 
       - name: Restore downloads cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .cache
           key: downloads-${{ hashFiles('upstream.json', 'sidecars.json') }}
@@ -140,7 +140,7 @@ jobs:
       # once saved under a given key, so this is a no-op if that exact key was already a hit).
       - name: Save downloads cache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .cache
           key: downloads-${{ hashFiles('upstream.json', 'sidecars.json') }}
