@@ -56,7 +56,9 @@ jobs:
             exit 0
           fi
 
-          files=$(git diff --name-only "$BASE" "$HEAD")
+          # Three-dot diff: compare HEAD against the merge-base with BASE, not BASE itself, so
+          # files changed on main after the PR branched off aren't counted as "changed" here.
+          files=$(git diff --name-only "$BASE...$HEAD")
           echo "Changed files:"
           echo "$files"
 
@@ -91,27 +93,30 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:unit
 
-      # electron-builder/electron-updater's dependency tree currently carries advisories that
-      # can only be cleared by bumping outside the pinned versions in package.json (tracked
-      # separately -- see the warning annotation below). Keep the job unblocked but visible
-      # rather than red-CI-forever.
+      # electron-updater was bumped 6.6.2 -> 6.8.9 and js-yaml 4.1.0 -> 4.3.2 (see
+      # package.json / commit "build: bump electron-updater/js-yaml to clear audit") specifically
+      # to clear the high-severity advisories these devDependencies used to carry
+      # (GHSA-p2f4-r6v6-j797, GHSA-mh29-5h37-fv8m and related) -- confirmed 0 vulnerabilities as
+      # of that bump, with tests/unit/versions.test.ts's electron-updater comparator test still
+      # passing against the new version. This deviates from the plan's Global Constraint pinning
+      # electron-updater to the bundled 6.6.2 (spec §3.4); recorded in docs/BRANCH_PROTECTION.md
+      # is out of scope here, see the Task C4 fix-round report. The step is blocking (no
+      # continue-on-error): a regression here is a real, currently-clearable finding.
       - name: npm audit (high+)
-        id: audit
-        continue-on-error: true
         run: npm audit --audit-level=high
-
-      - name: Warn on unresolved audit findings
-        if: steps.audit.outcome == 'failure'
-        run: |
-          echo "::warning::npm audit --audit-level=high reported high/critical advisories that require a version bump outside package.json's pinned devDependency ranges to clear (as of 2026-09-16: electron-updater's builder-util-runtime, GHSA-p2f4-r6v6-j797; js-yaml, GHSA-mh29-5h37-fv8m and related). This job does not fail on it -- track resolution via a dedicated dependency bump."
 
       # Dependabot's commit bodies routinely fail commitlint's stock rules (long changelog URLs,
       # non-conventional bump summaries) and would otherwise block its own PRs from ever going
       # green; the semantic PR title check below still applies to Dependabot since its titles
-      # are already Conventional-Commits shaped ("build(deps): bump x from a to b").
+      # are already Conventional-Commits shaped ("build(deps): bump x from a to b"). Keyed off
+      # the PR author (not github.actor, which is the identity that *triggered the run* -- e.g.
+      # a maintainer re-running a failed Dependabot check via workflow_dispatch/re-run would
+      # otherwise wrongly skip commitlint on someone else's PR).
       - name: commitlint
-        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
         uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.cjs
 
       - name: Conventional PR title
         if: github.event_name == 'pull_request'
@@ -196,15 +201,36 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
+        # Deliberately no `set -e`: this job's whole point is to leave a human-visible signal on
+        # a failed upstream-bump PR, and no single fallible `gh` call (a label that doesn't exist
+        # yet, a transient API error) may be allowed to abort the script before the comment --
+        # the actual signal a maintainer sees -- gets posted. Every call is individually
+        # fault-tolerant via `|| ...`.
         run: |
-          set -euo pipefail
-          gh pr edit "$PR" --repo "$REPO" --add-label needs-human --remove-label automerge \
-            || gh pr edit "$PR" --repo "$REPO" --add-label needs-human
+          set -uo pipefail
 
+          # Ensure the label exists first (idempotent) so `gh pr edit --add-label needs-human`
+          # below can't fail with "label not found" on a repo that hasn't run
+          # scripts/repo-setup.sh yet.
+          gh label create needs-human --repo "$REPO" --color d93f0b --force \
+            || echo "::warning::could not create/update the needs-human label on $REPO"
+
+          # Post the comment independently of (and before) the label edits, so a label failure
+          # can never suppress the actual maintainer-facing signal.
           marker="<!-- ci-failure-run-${RUN_ID} -->"
-          existing=$(gh pr view "$PR" --repo "$REPO" --json comments -q '.comments[].body')
+          existing=$(gh pr view "$PR" --repo "$REPO" --json comments -q '.comments[].body' 2>/dev/null || true)
           if ! printf '%s\n' "$existing" | grep -qF "$marker"; then
             body="$marker
           Automated upstream bump failed CI. See $RUN_URL. A maintainer must fix the branch or close this PR."
-            gh pr comment "$PR" --repo "$REPO" --body "$body"
+            gh pr comment "$PR" --repo "$REPO" --body "$body" \
+              || echo "::warning::failed to post the CI-failure comment on PR #$PR"
           fi
+
+          gh pr edit "$PR" --repo "$REPO" --add-label needs-human \
+            || echo "::warning::failed to add the needs-human label to PR #$PR"
+          gh pr edit "$PR" --repo "$REPO" --remove-label automerge \
+            || echo "::warning::failed to remove the automerge label from PR #$PR (it may not have had it)"
+
+          # Removing the label alone does not disable GitHub's native auto-merge if it was
+          # already enabled on the PR -- explicitly turn it off too.
+          gh pr merge --disable-auto "$PR" --repo "$REPO" || true
