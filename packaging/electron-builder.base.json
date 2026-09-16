@@ -43,7 +43,8 @@
     ],
     "afterInstall": "packaging/rpm/after-install.tpl",
     "afterRemove": "packaging/rpm/after-remove.tpl",
-    "description": "Unofficial Linux packaging of Qwen Studio, Alibaba's desktop client for\nthe Qwen Chat web app. Not affiliated with Alibaba Cloud."
+    "description": "Unofficial Linux packaging of Qwen Studio, Alibaba's desktop client for\nthe Qwen Chat web app. Not affiliated with Alibaba Cloud.",
+    "fpm": ["--rpm-auto-add-directories"]
   },
   "appImage": {}
 }

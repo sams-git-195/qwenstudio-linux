@@ -39,7 +39,10 @@ describe("buildConfig", () => {
   it("generates the rpm config", () => {
     const c = buildConfig("rpm", v) as Record<string, any>;
     expect(c.rpm.artifactName).toBe("qwen-studio-1.0.3.44-1.x86_64.rpm");
-    expect(c.rpm.fpm).toEqual(["--version", "1.0.3.44", "--iteration", "1"]);
+    // --rpm-auto-add-directories: without it fpm's rpm backend only lists files in %files, not
+    // their containing directories, so `dnf remove` leaves empty dirs (e.g. /opt/Qwen Studio and
+    // its locales/resources subdirs) behind because rpm never took ownership of them to clean up.
+    expect(c.rpm.fpm).toEqual(["--rpm-auto-add-directories", "--version", "1.0.3.44", "--iteration", "1"]);
     expect(c.directories.output).toBe("dist/rpm");
   });
   it("generates the AppImage config", () => {
