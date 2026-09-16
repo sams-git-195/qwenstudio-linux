@@ -1,0 +1,306 @@
+# Release pipeline (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md §12.4, §12.5).
+#
+# Every push to `main` is a release candidate. `plan` derives the git tag from upstream.json /
+# sidecars.json (`npm run version -- --print gitTag`, e.g. v1.0.3.44-1) and skips the whole run
+# when that tag already exists on origin -- so a docs-only merge, a Dependabot bump or the
+# CHANGELOG-finalize commit this workflow itself pushes never re-release. When the tag is new,
+# the full reusable build + 7-leg install matrix (build-and-test.yml) runs on the exact artifacts
+# that get published, and `publish` then:
+#   1. downloads `packages` (dist/), asserts exactly one .deb/.rpm/.AppImage + latest-linux.yml,
+#      writes dist/SHA256SUMS;
+#   2. renders build/notes.md (scripts/changelog.ts --release-notes, then GitHub's generated
+#      notes appended) BEFORE finalizing -- --release-notes reads the Unreleased section that
+#      --finalize moves under `## [<tag>]`;
+#   3. commits the finalized CHANGELOG.md to main as `chore(release): finalize CHANGELOG for
+#      <tag> [skip ci]` with the default GITHUB_TOKEN. Pushes made with GITHUB_TOKEN never start
+#      workflow runs, `[skip ci]` is a second guard, and `plan`'s `if:` on the commit subject is
+#      a third;
+#   4. creates the annotated tag on that commit, `gh release create` (never draft/prerelease,
+#      marked latest -- electron-updater's GitHub provider requires this, spec §3.4) with
+#      latest-linux.yml uploaded LAST so an updater never sees the YAML before the AppImage;
+#   5. attests build provenance for the .deb/.rpm/.AppImage.
+#
+# Ordering is deliberate: the CHANGELOG push is the first irreversible step and it is also the
+# one most likely to be refused (a `main` ruleset that requires PRs and has no bypass for the
+# Actions token rejects it -- see docs/BRANCH_PROTECTION.md). A refusal therefore fails the run
+# with NOTHING published or tagged, and a re-run via workflow_dispatch is clean.
+#
+# Re-running the failed `publish` job of the same run (download-artifact still has `packages`)
+# is safe: every step is idempotent -- finalize is skipped if CHANGELOG.md already has the tag's
+# section, the tag is reused if it already exists, and an existing release gets its assets
+# re-uploaded with --clobber instead of failing. A NEW run after a partial release (tag pushed,
+# release missing) is skipped by `plan` (tag exists); recovery is manual per spec §12.4 step 1
+# and docs/RELEASING.md: delete the release and the tag, then re-run via workflow_dispatch.
+#
+# Race: `main` may advance while the 45-minute build runs (concurrency queues the next release
+# run rather than running two at once). `publish` checks out the current `main` head, refuses
+# if $GITHUB_SHA is no longer an ancestor (main rewritten), and re-derives the tag at HEAD: if
+# it differs, a newer bump landed and its own queued run will publish it, so this run stops
+# with a notice and publishes nothing; if it is the same tag, the release proceeds and the tag
+# lands on HEAD (a warning lists the commits between the built $GITHUB_SHA and HEAD).
+
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Minimal by default; `publish` grants itself the write scopes it needs.
+permissions:
+  contents: read
+
+# Never two releases at once (they would race on the CHANGELOG push and on `--latest`); a second
+# push while one is building is queued, never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  EXPECTED_ASSETS: "5" # .deb, .rpm, .AppImage, SHA256SUMS, latest-linux.yml
+
+jobs:
+  plan:
+    name: Plan release
+    # Third guard against the CHANGELOG-finalize commit (see header): pushes by GITHUB_TOKEN do
+    # not start runs and the commit carries [skip ci], but if either ever changed this keeps the
+    # workflow from building a release for its own bookkeeping commit. head_commit is null on
+    # workflow_dispatch, so the expression is simply true there.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      should_release: ${{ steps.plan.outputs.should_release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      name: ${{ steps.plan.outputs.name }}
+    steps:
+      - name: Releases are cut from main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::release.yml only releases from refs/heads/main (got $REF); dispatch it on main"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - id: plan
+        run: |
+          set -euo pipefail
+          TAG=$(npm run -s version -- --print gitTag)
+          NAME=$(npm run -s version -- --print releaseName)
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::unexpected gitTag '$TAG' from scripts/version.ts"; exit 1 ;;
+          esac
+          {
+            echo "tag=$TAG"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::Tag $TAG already exists; nothing to release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG does not exist yet; releasing '$NAME'"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-test:
+    name: build-and-test
+    needs: plan
+    if: needs.plan.outputs.should_release == 'true'
+    uses: ./.github/workflows/build-and-test.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs: [plan, build-and-test]
+    if: needs.plan.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # push CHANGELOG commit + tag, create the release and upload assets
+      id-token: write # actions/attest-build-provenance (Sigstore OIDC)
+      attestations: write # actions/attest-build-provenance
+    steps:
+      # `main` (not github.sha): the CHANGELOG commit is pushed on top of whatever main is NOW.
+      # fetch-depth 0 so the ancestry check below and `git log` between the two heads work.
+      # persist-credentials (default true) leaves GITHUB_TOKEN in the checkout's origin remote,
+      # which is what authenticates the `git push` steps.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - id: sync
+        name: Reconcile built commit with current main
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          BUILT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$BUILT_SHA" ]; then
+            if ! git merge-base --is-ancestor "$BUILT_SHA" HEAD; then
+              echo "::error::main ($HEAD_SHA) no longer contains the built commit $BUILT_SHA (history rewritten?); refusing to release"
+              exit 1
+            fi
+            HEAD_TAG=$(npm run -s version -- --print gitTag)
+            if [ "$HEAD_TAG" != "$TAG" ]; then
+              echo "::notice::main moved on to $HEAD_TAG while $TAG was building; its own release run will publish it. Nothing published for $TAG."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::main advanced past the built commit $BUILT_SHA during the build; $TAG will be tagged on $HEAD_SHA, which additionally contains:"
+            git log --oneline "$BUILT_SHA..HEAD"
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        if: steps.sync.outputs.proceed == 'true'
+        with:
+          name: packages
+          path: dist
+
+      - name: Checksums
+        if: steps.sync.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          debs=(*.deb); rpms=(*.rpm); appimages=(*.AppImage)
+          if [ "${#debs[@]}" != 1 ] || [ "${#rpms[@]}" != 1 ] || [ "${#appimages[@]}" != 1 ] || [ ! -f latest-linux.yml ]; then
+            echo "::error::dist/ must contain exactly one .deb, one .rpm, one .AppImage and latest-linux.yml (found ${#debs[@]}/${#rpms[@]}/${#appimages[@]})"
+            ls -la
+            exit 1
+          fi
+          # Explicit list (not *): dist/ also carries electron-builder's builder-debug.yml, which is
+          # neither published nor checksummed.
+          sha256sum "${debs[0]}" "${rpms[0]}" "${appimages[0]}" latest-linux.yml > SHA256SUMS
+          cat SHA256SUMS
+
+      # --release-notes must run BEFORE --finalize (see header). GitHub's generated notes
+      # (merged PRs / contributors since the previous release) are appended best-effort: a
+      # transient API failure must not block the release.
+      - name: Release notes
+        if: steps.sync.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          npm run -s changelog -- --release-notes dist/SHA256SUMS
+          HEAD_SHA=$(git rev-parse HEAD)
+          if gen=$(gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$HEAD_SHA" -q .body); then
+            printf '\n%s\n' "$gen" >> build/notes.md
+          else
+            echo "::warning::could not fetch GitHub's generated release notes; publishing scripts/changelog.ts notes only"
+          fi
+          echo "----- build/notes.md -----"
+          cat build/notes.md
+
+      # First irreversible step. Idempotent: skipped when CHANGELOG.md already has this tag's
+      # section (re-run of a failed job). A non-fast-forward rejection (something landed on main
+      # between checkout and push) is retried from a fresh origin/main up to 3 times; any other
+      # rejection -- typically the `main` ruleset refusing the Actions token -- fails the run
+      # before anything is tagged or released.
+      - name: Finalize CHANGELOG.md on main
+        if: steps.sync.outputs.proceed == 'true'
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for attempt in 1 2 3; do
+            if grep -q "^## \[$TAG\]" CHANGELOG.md; then
+              echo "CHANGELOG.md already has a section for $TAG; nothing to finalize"
+              exit 0
+            fi
+            npm run -s changelog -- --finalize "$TAG"
+            git add CHANGELOG.md
+            git commit -q -m "chore(release): finalize CHANGELOG for $TAG [skip ci]"
+            if git push origin HEAD:refs/heads/main; then
+              echo "pushed $(git rev-parse HEAD) to main"
+              exit 0
+            fi
+            echo "::warning::push to main rejected (attempt $attempt/3); refreshing origin/main and retrying"
+            git fetch origin main
+            git reset -q --hard origin/main
+            # Same superseded check as the `sync` step, against the refreshed head.
+            HEAD_TAG=$(npm run -s version -- --print gitTag)
+            if [ "$HEAD_TAG" != "$TAG" ]; then
+              echo "::error::main moved on to $HEAD_TAG while publishing $TAG; its own release run will publish it. Nothing tagged or released for $TAG."
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::could not push the CHANGELOG commit to main. If the rejection is 'protected branch' / ruleset, the main ruleset must allow this workflow's pushes (docs/BRANCH_PROTECTION.md). Nothing was tagged or released; re-run via workflow_dispatch once fixed."
+          exit 1
+
+      - name: Tag
+        if: steps.sync.outputs.proceed == 'true'
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists on origin (re-run); reusing it"
+            exit 0
+          fi
+          git tag -a "$TAG" -m "$NAME"
+          git push origin "refs/tags/$TAG"
+          echo "tagged $(git rev-parse HEAD) as $TAG"
+
+      - name: Create release (latest-linux.yml uploaded last)
+        if: steps.sync.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          NAME: ${{ needs.plan.outputs.name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::warning::release $TAG already exists (re-run); re-uploading assets with --clobber"
+            gh release upload "$TAG" --repo "$REPO" --clobber dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS
+            gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease=false --latest --title "$NAME" --notes-file build/notes.md
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$NAME" --notes-file build/notes.md --latest \
+              dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber dist/latest-linux.yml
+
+          count=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets | length')
+          if [ "$count" != "$EXPECTED_ASSETS" ]; then
+            echo "::error::release $TAG has $count assets, expected $EXPECTED_ASSETS"; exit 1
+          fi
+          gh release view "$TAG" --repo "$REPO"
+
+      - uses: actions/attest-build-provenance@v2
+        if: steps.sync.outputs.proceed == 'true'
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
