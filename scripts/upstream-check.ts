@@ -531,14 +531,30 @@ export async function main(argv = process.argv.slice(2), deps: Deps = realDeps()
     return reportFailure(deps, opts, repo, "cannot read or parse the upstream feed", errMsg(e));
   }
 
+  let current: UpstreamManifest;
   try {
-    const current = deps.readUpstream();
-    if (compareUpstream(feed, current) <= 0) {
-      deps.log(`Up to date (feed ${feed.version}.${feed.build}, local ${current.version}.${current.build})`);
-      return 0;
-    }
-    deps.log(`New upstream ${feed.version}.${feed.build} (local ${current.version}.${current.build}); running pre-flight checks`);
+    current = deps.readUpstream();
+  } catch (e) {
+    return reportFailure(deps, opts, repo, "unexpected error", e instanceof Error ? (e.stack ?? e.message) : String(e), feed);
+  }
+  if (compareUpstream(feed, current) <= 0) {
+    deps.log(`Up to date (feed ${feed.version}.${feed.build}, local ${current.version}.${current.build})`);
+    return 0;
+  }
+  deps.log(`New upstream ${feed.version}.${feed.build} (local ${current.version}.${current.build}); running pre-flight checks`);
 
+  // Validate what the feed points at BEFORE downloading anything from it: nextManifest() runs
+  // the same validateUpstream() the committed upstream.json must satisfy (https://download.qwen.ai/
+  // origin, no /latest/, well-formed sha512/size/date). A feed that redirects the installer to
+  // another host must be rejected here, not after realPreflight() has already fetched ~200 MB
+  // from that host and run 7z over it.
+  try {
+    nextManifest(feed);
+  } catch (e) {
+    return reportFailure(deps, opts, repo, "feed points at an unacceptable installer", `${errMsg(e)}\ninstaller URL from the feed: ${feed.url}`, feed);
+  }
+
+  try {
     const preflight = await deps.preflight(feed);
     for (const c of preflight.checks) deps.log(`  [${c.ok ? "x" : " "}] ${c.name}`);
     const plan = buildPlan({ feed, current, base: opts.base, preflight, fixtureChanged: fixtureDiffers(deps, preflight.pristineIndexJs) });

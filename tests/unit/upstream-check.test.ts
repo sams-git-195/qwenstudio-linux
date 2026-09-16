@@ -385,6 +385,29 @@ describe("upstream-check orchestration", () => {
     expect(ghCalls(g, "issue", "create")).toEqual([]);
     expect(ghCalls(g, "issue", "comment")[0].slice(0, 3)).toEqual(["issue", "comment", "5"]);
   });
+  it("rejects an off-host installer URL before any download (preflight never runs)", async () => {
+    // Same feed, but files[0].url now points at a different origin than download.qwen.ai. The
+    // basename still matches the installer regex so parseFeed accepts it; validateUpstream (via
+    // nextManifest) is what must refuse it -- and it must do so BEFORE deps.preflight(), which is
+    // the step that would download and unpack the installer from that host.
+    const offHost = feedText.replace(
+      "url: Qwen-1.0.3.44-release-win-x64.exe",
+      "url: https://cdn.example.com/evil/Qwen-1.0.3.44-release-win-x64.exe",
+    );
+    const f = fakeDeps({ current: current43, feedText: offHost });
+    let preflightCalls = 0;
+    f.deps.preflight = async () => { preflightCalls++; throw new Error("PREFLIGHT-MUST-NOT-RUN"); };
+    expect(await main([], f.deps)).toBe(1);
+    expect(preflightCalls).toBe(0);
+    expect(f.errors.join("\n")).toContain("feed points at an unacceptable installer");
+    expect(f.errors.join("\n")).toContain("url");
+    expect(f.errors.join("\n")).not.toContain("PREFLIGHT-MUST-NOT-RUN");
+    const create = ghCalls(f, "issue", "create");
+    expect(create).toHaveLength(1);
+    expect(create[0]).toContain("Upstream bot failure: feed points at an unacceptable installer");
+    expect(create[0][create[0].length - 1]).toContain("cdn.example.com");
+    expect(ghCalls(f, "pr")).toEqual([]); expect(f.git).toEqual([]); expect(f.writes).toEqual([]);
+  });
   it("dry-run never opens an issue on failure", async () => {
     const f = fakeDeps({ fetchError: "boom" });
     expect(await main(["--dry-run"], f.deps)).toBe(1);
