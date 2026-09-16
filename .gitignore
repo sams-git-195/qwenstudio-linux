@@ -1,0 +1,7 @@
+*.exe
+.cache/
+build/
+dist/
+node_modules/
+*.log
+smoke.log

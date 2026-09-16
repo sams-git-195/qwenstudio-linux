@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Problems with Qwen Chat itself
+    url: https://chat.qwen.ai/
+    about: This repository only packages the app for Linux. Report application or service problems to Alibaba.

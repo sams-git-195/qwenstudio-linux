@@ -1,0 +1,55 @@
+# rpmlint configuration for the unofficial Qwen Studio package (spec §11.3).
+#
+# Captured against rpmlint 2.6.1 running in the fedora:41 container image (see
+# task B5 report for the full run). Per spec §11.3, an E: tag may be filtered
+# here ONLY if it is caused by files shipped verbatim (or with only minimal
+# Linux-compatibility patches, see patches/ and src/app/) from the Electron
+# runtime or the upstream Qwen Studio app; anything about the desktop file,
+# control fields, dependencies, or maintainer scripts that this packaging
+# controls must instead be fixed in packaging/electron-builder.base.json /
+# packaging/rpm/*.tpl / scripts/lib/electron-builder-config.ts and rebuilt
+# (see those files' comments for the fixes that avoided needing a filter
+# here: rpm.afterInstall/afterRemove/description, and the rpm after-install
+# template, for update-alternatives-requirement-missing /
+# alternative-link-missing / alternative-generic-name-missing / spelling /
+# description-line-too-long).
+#
+# ONE exception to that rule: explicit-lib-dependency (see below) is a
+# deviation from spec §11.3 for that tag only, accepted by controller ruling
+# in task B5 (fix round 1). It is not evidence that "dependencies" in general
+# may be filtered -- every other dependency-shaped finding still gets fixed
+# in packaging, never suppressed.
+Filters = [
+  # Prebuilt Electron binaries and the bun/uv sidecars are not stripped upstream.
+  "unstripped-binary-or-object",
+  # The Electron binary and libffmpeg.so carry an $ORIGIN RUNPATH to find their bundled libraries in /opt.
+  "binary-or-shlib-defines-rpath",
+  # electron-builder installs under /opt/<productName>, which is not a standard RPM directory.
+  "dir-or-file-in-opt",
+  # The package ships no man page or docs by design; documentation lives in the GitHub repository.
+  "no-documentation",
+  # chrome-sandbox is Electron/Chromium's own verbatim setuid sandbox helper binary; its
+  # setuid()/setgid() handling is upstream Chromium code, not something this packaging controls.
+  "missing-call-to-setgroups-before-setuid",
+  # DEVIATION (spec §11.3), accepted by controller ruling in task B5: fpm's rpm backend builds
+  # with AutoReqProv: no, so rpmbuild never generates the automatic soname-level Requires that
+  # rpmlint's explicit-lib-dependency check assumes exist as the alternative to an explicit
+  # dependency -- without AutoReqProv there IS no other mechanism, and explicit package-name
+  # Requires in rpm.depends is the only way this package declares the runtime libraries
+  # qwen-studio needs. Reformatting those entries to soname form (the only form rpmlint accepts
+  # unsuppressed) would satisfy rpmlint but break tests/unit/deps.test.ts, which pins the exact
+  # literal package-name strings in packaging/electron-builder.base.json and independently proves
+  # their completeness by intersecting `readelf -d`/`ldd` of the built qwen-studio binary against
+  # them. This is a rpmlint false positive for packages built with AutoReqProv disabled, not a
+  # real dependency defect -- see task B5 report "concerns" for the full analysis.
+  "explicit-lib-dependency",
+  # The License header is deliberately "Proprietary (Qwen Studio, Alibaba Cloud) and MIT
+  # (packaging)" (packaging/electron-builder.base.json, asserted by scripts/verify.ts): the
+  # payload is the proprietary upstream app and only this repository's packaging is MIT, and
+  # electron-builder would otherwise stamp package.json's "MIT" on the whole package. rpmlint
+  # splits the string on "and"/parentheses and checks each token against Fedora's SPDX list, so
+  # every token that is not "MIT" trips this W. This is metadata this packaging controls, but
+  # there is no Fedora-valid identifier for an unlicensed proprietary payload that would also
+  # be truthful, so the W is filtered rather than the string weakened.
+  "invalid-license",
+]

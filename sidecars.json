@@ -1,0 +1,19 @@
+{
+  "electron": {
+    "version": "35.1.4",
+    "url": "https://github.com/electron/electron/releases/download/v35.1.4/electron-v35.1.4-linux-x64.zip",
+    "sha256": "19a6b1a90bb9c13ad5ba1dcb8ebe1b98d9f8b8488e7731e56199c2a4971d7b47"
+  },
+  "bun": {
+    "version": "1.2.10",
+    "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.2.10/bun-linux-x64-baseline.zip",
+    "sha256": "4b62f599048ef320a761bacbeeb71f8784f5e373b976a9d53b3ee7811f19b004",
+    "extract": { "bun": "bun-linux-x64-baseline/bun" }
+  },
+  "uv": {
+    "version": "0.12.15",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.12.15/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "f97935763c04be3e692460a7aaeaaab8fc3b78fcf8b389da820b38ae7423a638",
+    "extract": { "uv": "uv-x86_64-unknown-linux-gnu/uv", "uvx": "uv-x86_64-unknown-linux-gnu/uvx" }
+  }
+}

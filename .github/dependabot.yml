@@ -1,0 +1,31 @@
+# Dependabot configuration (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# §11.6). Weekly updates for both ecosystems; minor/patch bumps are grouped into a single PR per
+# ecosystem per run so they don't flood the queue, while major bumps stay ungrouped (one PR each,
+# for closer review). Per spec §11.6, Dependabot PRs are labelled `dependencies` and are NOT
+# auto-merged (no automerge label or workflow targets them).
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    commit-message:
+      prefix: "build"
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

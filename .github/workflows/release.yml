@@ -1,0 +1,358 @@
+# Release pipeline (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md §12.4, §12.5).
+#
+# Every push to `main` is a release candidate. `plan` derives the git tag from upstream.json
+# (`npm run version -- --print gitTag`, e.g. v1.0.3.44-1) and skips the whole run
+# when that tag already exists on origin -- so a docs-only merge, a Dependabot bump or the
+# CHANGELOG PR this workflow itself opens never re-release. When the tag is new, the full
+# reusable build + 7-leg install matrix (build-and-test.yml) runs on the exact artifacts that
+# get published, and `publish` then:
+#   1. downloads `packages` (dist/), asserts exactly one .deb/.rpm/.AppImage + latest-linux.yml,
+#      writes dist/SHA256SUMS;
+#   2. renders build/notes.md from the CHANGELOG's *Unreleased* section (scripts/changelog.ts
+#      --release-notes) with GitHub's generated notes appended;
+#   3. creates the annotated tag on the built commit ($GITHUB_SHA), `gh release create` (never
+#      draft/prerelease, marked latest -- electron-updater's GitHub provider requires this, spec
+#      §3.4) with latest-linux.yml uploaded LAST so an updater never sees the YAML before the
+#      AppImage;
+#   4. attests build provenance for the .deb/.rpm/.AppImage.
+# `changelog` then finalizes CHANGELOG.md (Unreleased -> `## [<tag>] - <date>`) on branch
+# `release/changelog-<tag>` and opens an auto-merging PR for it. The `main` ruleset (spec §13:
+# PRs required, no bypass) forbids pushing to main directly -- even for the workflow's own
+# bookkeeping -- so the finalized CHANGELOG goes through a PR like everything else. It is opened
+# with the owner's PAT (secrets.UPSTREAM_BOT_TOKEN, same as the upstream bot), because a PR made
+# with GITHUB_TOKEN never gets a `pull_request` run of ci.yml, so `ci-status` would never appear
+# and auto-merge would never fire. The PR is docs-only, so ci.yml runs only lint-unit +
+# ci-status; when it merges, the push to main re-triggers this workflow, whose `plan` skips
+# (tag exists).
+#
+# Re-running the failed `publish` job of the same run (download-artifact still has `packages`)
+# is safe: the tag is reused if it already exists, and an existing release gets its assets
+# re-uploaded with --clobber instead of failing. A NEW run after a partial release (tag pushed,
+# release missing) is skipped by `plan` (tag exists); recovery is manual per spec §12.4 step 1
+# and docs/RELEASING.md: delete the release and the tag, then re-run via workflow_dispatch.
+# Re-running `changelog` is idempotent too: it stops if main already has the tag's section,
+# force-pushes its own branch, and reuses an open PR for that head.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Minimal by default; `publish` grants itself the write scopes it needs. `changelog` writes only
+# through the PAT.
+permissions:
+  contents: read
+
+# Never two releases at once (they would race on `--latest`); a second push while one is
+# building is queued, never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  EXPECTED_ASSETS: "5" # .deb, .rpm, .AppImage, SHA256SUMS, latest-linux.yml
+
+jobs:
+  plan:
+    name: Plan release
+    # No commit-message guard on purpose: a human PR titled `chore(release): bump wrapper_revision`
+    # must still release. The tag-exists check below is what makes the CHANGELOG PR's own merge
+    # (and every other non-version-changing push) a no-op.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      should_release: ${{ steps.plan.outputs.should_release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      name: ${{ steps.plan.outputs.name }}
+    steps:
+      - name: Releases are cut from main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::release.yml only releases from refs/heads/main (got $REF); dispatch it on main"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - id: plan
+        run: |
+          set -euo pipefail
+          TAG=$(npm run -s version -- --print gitTag)
+          NAME=$(npm run -s version -- --print releaseName)
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::unexpected gitTag '$TAG' from scripts/version.ts"; exit 1 ;;
+          esac
+          {
+            echo "tag=$TAG"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::Tag $TAG already exists; nothing to release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG does not exist yet; releasing '$NAME'"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-test:
+    name: build-and-test
+    needs: plan
+    if: needs.plan.outputs.should_release == 'true'
+    uses: ./.github/workflows/build-and-test.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs: [plan, build-and-test]
+    if: needs.plan.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # push the tag, create the release and upload assets
+      id-token: write # actions/attest-build-provenance (Sigstore OIDC)
+      attestations: write # actions/attest-build-provenance
+    steps:
+      # Default ref = $GITHUB_SHA, the commit build-and-test built from: the tag goes exactly
+      # there. persist-credentials: false keeps GITHUB_TOKEN out of .git/config while `npm ci`
+      # runs third-party install scripts; the push credential is added to the origin remote only
+      # after that, in "Authenticate origin for the tag push" below.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Only now (after npm ci) does a write-capable token reach the checkout: `git push` in the
+      # Tag step authenticates through this URL. github.token has contents: write here.
+      - name: Authenticate origin for the tag push
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          debs=(*.deb); rpms=(*.rpm); appimages=(*.AppImage)
+          if [ "${#debs[@]}" != 1 ] || [ "${#rpms[@]}" != 1 ] || [ "${#appimages[@]}" != 1 ] || [ ! -f latest-linux.yml ]; then
+            echo "::error::dist/ must contain exactly one .deb, one .rpm, one .AppImage and latest-linux.yml (found ${#debs[@]}/${#rpms[@]}/${#appimages[@]})"
+            ls -la
+            exit 1
+          fi
+          # Explicit list (not *): SHA256SUMS is written into dist/ itself (a re-run must not
+          # checksum the previous SHA256SUMS), and only the four published files belong in it.
+          sha256sum "${debs[0]}" "${rpms[0]}" "${appimages[0]}" latest-linux.yml > SHA256SUMS
+          cat SHA256SUMS
+
+      # scripts/changelog.ts --release-notes renders the header (versions, install, notice,
+      # SHA256 list) followed by the CHANGELOG's Unreleased bullets -- the section the
+      # `changelog` job finalizes afterwards, so the notes and the finalized section match.
+      # GitHub's generated notes (merged PRs / contributors since the previous release) are
+      # appended best-effort: a transient API failure must not block the release.
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REPO: ${{ github.repository }}
+          BUILT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm run -s changelog -- --release-notes dist/SHA256SUMS
+          if gen=$(gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$BUILT_SHA" -q .body); then
+            printf '\n%s\n' "$gen" >> build/notes.md
+          else
+            echo "::warning::could not fetch GitHub's generated release notes; publishing scripts/changelog.ts notes only"
+          fi
+          echo "----- build/notes.md -----"
+          cat build/notes.md
+
+      # First irreversible step. Skipped when the tag already exists on origin (re-run of a
+      # failed job), so a re-run never moves a tag.
+      - name: Tag
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists on origin (re-run); reusing it"
+            exit 0
+          fi
+          # An annotated tag needs a tagger identity; the runner has none configured.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$NAME"
+          git push origin "refs/tags/$TAG"
+          echo "tagged $(git rev-parse HEAD) as $TAG"
+
+      - name: Create release (latest-linux.yml uploaded last)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          NAME: ${{ needs.plan.outputs.name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Only a definite "not found" may take the create path; any other failure (auth, 5xx,
+          # network) must stop here rather than attempt a second create.
+          if view=$(gh release view "$TAG" --repo "$REPO" 2>&1); then
+            exists=true
+          elif printf '%s' "$view" | grep -qiE 'release not found|HTTP 404|Not Found'; then
+            exists=false
+          else
+            echo "::error::gh release view $TAG failed: $view"
+            exit 1
+          fi
+          if [ "$exists" = true ]; then
+            echo "::warning::release $TAG already exists (re-run); re-uploading assets with --clobber"
+            gh release upload "$TAG" --repo "$REPO" --clobber dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS
+            gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease=false --latest --title "$NAME" --notes-file build/notes.md
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$NAME" --notes-file build/notes.md --latest \
+              dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber dist/latest-linux.yml
+
+          count=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets | length')
+          if [ "$count" != "$EXPECTED_ASSETS" ]; then
+            echo "::error::release $TAG has $count assets, expected $EXPECTED_ASSETS"; exit 1
+          fi
+          gh release view "$TAG" --repo "$REPO"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  changelog:
+    name: Changelog PR
+    needs: [plan, publish]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # No GITHUB_TOKEN scopes at all: the branch push, PR and auto-merge all go through the PAT
+    # (see header for why the PAT is required). The PAT reaches the checkout's origin remote only
+    # after `npm ci` (see "Authenticate origin for the branch push" below).
+    permissions: {}
+    steps:
+      # Before checkout on purpose: actions/checkout with an empty `token:` fails with an
+      # unrelated-looking auth error. The release itself is already published at this point;
+      # only the CHANGELOG bookkeeping is missing.
+      - name: Require UPSTREAM_BOT_TOKEN
+        env:
+          HAS_TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::secrets.UPSTREAM_BOT_TOKEN is not set, so the CHANGELOG PR cannot be opened (a PR made with GITHUB_TOKEN would never get a ci-status check and could not auto-merge; see docs/BRANCH_PROTECTION.md). The release itself is published. Add the secret and re-run this job, or finalize CHANGELOG.md by hand: npm run changelog -- --finalize <tag>."
+            exit 1
+          fi
+
+      # Branch from the CURRENT main (not $GITHUB_SHA) so the PR is mergeable even if main moved
+      # on during the build. `token:` authenticates the clone itself; persist-credentials: false
+      # then keeps the PAT out of .git/config while `npm ci` runs third-party install scripts.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Only now (after npm ci) does the PAT reach the checkout: the `git push -f origin` below
+      # authenticates through this URL.
+      - name: Authenticate origin for the branch push
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+
+      - name: Open auto-merging CHANGELOG PR
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_BOT_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REPO: ${{ github.repository }}
+          BOT_NAME: qwenstudio-linux-bot
+          BOT_EMAIL: noreply@github.com
+        run: |
+          set -euo pipefail
+          if grep -q "^## \[$TAG\]" CHANGELOG.md; then
+            echo "main already has a CHANGELOG section for $TAG; nothing to do"
+            exit 0
+          fi
+
+          BR="release/changelog-$TAG"
+          TITLE="chore(release): changelog for $TAG"
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+          git checkout -q -b "$BR"
+          npm run -s changelog -- --finalize "$TAG"
+          git add CHANGELOG.md
+          git commit -q -m "$TITLE"
+          # -f: on a re-run the branch already exists and is ours to rewrite.
+          git push -f origin "HEAD:refs/heads/$BR"
+
+          PR=$(gh pr list --repo "$REPO" --head "$BR" --base main --state open --json number -q '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            echo "reusing open PR #$PR for $BR"
+          else
+            url=$(gh pr create --repo "$REPO" --base main --head "$BR" --title "$TITLE" \
+              --body "Finalizes CHANGELOG.md for $TAG (release: https://github.com/$REPO/releases/tag/$TAG). Docs-only; auto-merges when ci-status passes.")
+            PR=${url##*/}
+            case "$PR" in
+              ''|*[!0-9]*) echo "::error::could not determine the PR number from gh output: $url"; exit 1 ;;
+            esac
+            echo "opened PR #$PR: $url"
+          fi
+
+          # Label AFTER the PR exists and best-effort: on a fresh repo the label may not exist yet
+          # (scripts/repo-setup.sh not run) or the PAT may lack Issues: write; neither may cost the
+          # PR or the auto-merge below. Same colour as repo-setup.sh.
+          gh label create automerge --repo "$REPO" --color 0e8a16 --force \
+            || echo "::warning::could not create/update the automerge label on $REPO (run scripts/repo-setup.sh)"
+          gh pr edit "$PR" --repo "$REPO" --add-label automerge \
+            || echo "::warning::could not add the automerge label to PR #$PR; auto-merge is armed regardless"
+
+          # Same guard as scripts/upstream-check.ts: arming auto-merge on a PR that already has
+          # it enabled errors, and a re-run of this job must stay green.
+          if [ "$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest -q '.autoMergeRequest != null')" = "true" ]; then
+            echo "auto-merge already armed on PR #$PR"
+          else
+            gh pr merge "$PR" --repo "$REPO" --auto --squash
+            echo "auto-merge (squash) armed on PR #$PR; it merges once ci-status passes"
+          fi
