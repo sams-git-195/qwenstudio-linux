@@ -40,7 +40,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  decide, renderFailureComment, assertSafeBranch, parseArgs, buildPlan, main, checkPatches, foreignAuthors,
+  decide, renderFailureComment, assertSafeBranch, parseArgs, buildPlan, main, checkPatches, foreignAuthors, maskSecrets, AUTOMERGE_FAILURE_REASON,
   CHECK_DOWNLOAD, CHECK_ELECTRON, CHECK_PATCHES, LABEL_AUTOMERGE, LABEL_BUMP, LABEL_NEEDS_HUMAN, DEFAULT_FEED,
   type Deps, type Preflight, type CheckResult,
 } from "../../scripts/upstream-check.js";
@@ -62,6 +62,7 @@ interface Fake { deps: Deps; git: string[][]; gh: string[][]; writes: unknown[];
 function fakeDeps(o: {
   current?: UpstreamManifest; feedText?: string; fetchError?: string; preflight?: Preflight;
   prNumber?: string; comments?: string; authors?: string; autoMergeEnabledAt?: string; env?: NodeJS.ProcessEnv; files?: Record<string, string>; dirty?: string;
+  remoteTree?: string; closedUnmerged?: string; mergeError?: string;
 } = {}): Fake {
   const git: string[][] = []; const gh: string[][] = []; const writes: unknown[] = []; const logs: string[] = []; const errors: string[] = [];
   const preflight: Preflight = o.preflight ?? { checks: [pass(CHECK_DOWNLOAD), pass(CHECK_ELECTRON), pass(CHECK_PATCHES)], installerSize: 124954112, electronDetected: "35.1.4" };
@@ -74,12 +75,16 @@ function fakeDeps(o: {
     git: (args) => {
       git.push(args);
       if (args[0] === "status") return o.dirty ?? "";
-      if (args[0] === "diff") return "upstream.json\n";
+      if (args[0] === "ls-remote") return o.remoteTree === undefined ? "" : `deadbeef\trefs/heads/${args[3]}\n`;
+      if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") return "tree-local\n";
+      if (args[0] === "rev-parse" && args[1] === "FETCH_HEAD^{tree}") return `${o.remoteTree}\n`;
       return "";
     },
     gh: (args) => {
       gh.push(args);
+      if (args[0] === "pr" && args[1] === "list" && args.includes("closed")) return o.closedUnmerged ?? "";
       if (args[0] === "pr" && args[1] === "list") return o.prNumber ?? "";
+      if (args[0] === "pr" && args[1] === "merge" && args.includes("--auto") && o.mergeError) throw new Error(o.mergeError);
       if (args[0] === "pr" && args[1] === "create") return "https://github.com/sams-git-195/qwenstudio-linux/pull/77\n";
       if (args[0] === "pr" && args[1] === "view" && args.includes("autoMergeRequest")) return o.autoMergeEnabledAt ?? "";
       if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) return o.authors ?? "qwenstudio-linux-bot <noreply@github.com>\n";
@@ -94,6 +99,9 @@ function fakeDeps(o: {
 }
 
 const ghCalls = (f: Fake, ...prefix: string[]) => f.gh.filter((a) => prefix.every((p, i) => a[i] === p));
+const gitOps = (f: Fake) => f.git.map((a) => a[0] === "-c" ? a[4] : a[0]);
+const addedLabels = (f: Fake) => ghCalls(f, "pr", "edit").filter((a) => a.includes("--add-label")).map((a) => a[a.length - 1]);
+const removedLabels = (f: Fake) => ghCalls(f, "pr", "edit").filter((a) => a.includes("--remove-label")).map((a) => a[a.length - 1]);
 
 describe("upstream-check decision logic", () => {
   it("auto-merges only when every check passed", () => {
@@ -177,8 +185,9 @@ describe("upstream-check orchestration", () => {
   it("all checks pass: branch, commit, force-push, PR create, upstream-bump + automerge, auto-merge enabled", async () => {
     const f = fakeDeps({ current: current43, preflight: { checks: [pass(CHECK_DOWNLOAD), pass(CHECK_ELECTRON), pass(CHECK_PATCHES)], installerSize: 124954112, electronDetected: "35.1.4", pristineIndexJs: "/x/index.js" }, files: { "/x/index.js": "new" } });
     expect(await main(["--base-branch", "main"], f.deps)).toBe(0);
-    expect(f.git.map((a) => a[0] === "-c" ? a[4] : a[0])).toEqual(["status", "checkout", "add", "diff", "commit", "push"]);
-    expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-B", "upstream/main/v1.0.3.44"]);
+    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "push"]);
+    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "main"]);
+    expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-q", "-B", "upstream/main/v1.0.3.44", "FETCH_HEAD"]);
     expect(f.git.find((a) => a[0] === "push")).toEqual(["push", "-f", "origin", "HEAD:refs/heads/upstream/main/v1.0.3.44"]);
     const commit = f.git.find((a) => a.includes("commit"))!;
     expect(commit).toContain("user.name=qwenstudio-linux-bot");
@@ -188,9 +197,11 @@ describe("upstream-check orchestration", () => {
     expect(f.writes[0]).toMatchObject({ manifest: { build: 44, size: 124954112, wrapper_revision: 1 }, pristineIndexJs: "/x/index.js" });
     expect(ghCalls(f, "pr", "create")).toHaveLength(1);
     expect(ghCalls(f, "pr", "create")[0]).toContain("--head"); expect(ghCalls(f, "pr", "create")[0]).toContain("upstream/main/v1.0.3.44");
-    expect(ghCalls(f, "pr", "edit").filter((a) => a.includes("--add-label")).map((a) => a[a.length - 1])).toEqual([LABEL_BUMP, LABEL_AUTOMERGE]);
-    expect(ghCalls(f, "pr", "edit").filter((a) => a.includes("--remove-label")).map((a) => a[a.length - 1])).toEqual([LABEL_NEEDS_HUMAN]);
+    expect(addedLabels(f)).toEqual([LABEL_BUMP, LABEL_AUTOMERGE]);
+    expect(removedLabels(f)).toEqual([LABEL_NEEDS_HUMAN]);
     expect(ghCalls(f, "pr", "merge")).toEqual([["pr", "merge", "77", "--repo", "sams-git-195/qwenstudio-linux", "--auto", "--squash"]]);
+    // auto-merge is armed before the automerge label is added
+    expect(f.gh.findIndex((a) => a[1] === "merge")).toBeLessThan(f.gh.findIndex((a) => a.includes("--add-label") && a.includes(LABEL_AUTOMERGE)));
     expect(ghCalls(f, "pr", "comment")).toEqual([]);
     expect(ghCalls(f, "issue")).toEqual([]);
   });
@@ -199,8 +210,8 @@ describe("upstream-check orchestration", () => {
     expect(await main([], f.deps)).toBe(0);
     expect(f.writes).toHaveLength(1);
     expect((f.writes[0] as { manifest: UpstreamManifest }).manifest.build).toBe(44);
-    expect(ghCalls(f, "pr", "edit").filter((a) => a.includes("--add-label")).map((a) => a[a.length - 1])).toEqual([LABEL_BUMP, LABEL_NEEDS_HUMAN]);
-    expect(ghCalls(f, "pr", "edit").filter((a) => a.includes("--remove-label")).map((a) => a[a.length - 1])).toEqual([LABEL_AUTOMERGE]);
+    expect(addedLabels(f)).toEqual([LABEL_BUMP, LABEL_NEEDS_HUMAN]);
+    expect(removedLabels(f)).toEqual([LABEL_AUTOMERGE]);
     expect(ghCalls(f, "pr", "merge").map((a) => a.slice(-1)[0])).toEqual(["--disable-auto"]);
     const comments = ghCalls(f, "pr", "comment");
     expect(comments).toHaveLength(1);
@@ -238,17 +249,72 @@ describe("upstream-check orchestration", () => {
     const f = fakeDeps({ current: current43, prNumber: "12", authors: "qwenstudio-linux-bot <noreply@github.com>\nSam <sam@example.com>\nqwenstudio-linux-bot <noreply@github.com>\n" });
     expect(await main([], f.deps)).toBe(0);
     expect(f.git).toEqual([]); expect(f.writes).toEqual([]);
-    expect(f.gh.map((a) => a.slice(0, 2))).toEqual([["pr", "list"], ["pr", "view"]]);
+    expect(f.gh.map((a) => a.slice(0, 2))).toEqual([["pr", "list"], ["pr", "list"], ["pr", "view"]]);
     expect(f.logs.join("\n")).toContain("PR #12 (upstream/main/v1.0.3.44) has commits by Sam <sam@example.com>; leaving the branch and PR untouched");
   });
   it("foreignAuthors ignores the bot identity and blank lines", () => {
     expect(foreignAuthors("bot <b@x>\n\nA <a@x>\nbot <b@x>\nA <a@x>\n", "bot <b@x>")).toEqual(["A <a@x>"]);
     expect(foreignAuthors("", "bot <b@x>")).toEqual([]);
   });
+  it("re-run with an unchanged tree: no push, no label edits, no auto-merge, PR left as is", async () => {
+    const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-local" });
+    expect(await main([], f.deps)).toBe(0);
+    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "fetch", "rev-parse", "rev-parse"]);
+    expect(f.git.find((a) => a[0] === "push")).toBeUndefined();
+    expect(f.gh.map((a) => a.slice(0, 2))).toEqual([["pr", "list"], ["pr", "list"], ["pr", "view"]]);
+    expect(f.logs.join("\n")).toContain("unchanged on origin, nothing to push");
+    expect(f.logs.join("\n")).toContain("PR #12 left as is");
+  });
+  it("re-run with a changed tree: force-pushes and updates the PR", async () => {
+    const f = fakeDeps({ current: current43, prNumber: "12", remoteTree: "tree-remote-old" });
+    expect(await main([], f.deps)).toBe(0);
+    expect(gitOps(f)).toEqual(["status", "fetch", "checkout", "add", "commit", "ls-remote", "fetch", "rev-parse", "rev-parse", "push"]);
+    expect(ghCalls(f, "pr", "edit").find((a) => a.includes("--title"))!.slice(0, 3)).toEqual(["pr", "edit", "12"]);
+    expect(ghCalls(f, "pr", "merge")[0].slice(0, 3)).toEqual(["pr", "merge", "12"]);
+  });
+  it("unchanged tree but no open PR: skips the push yet still opens the PR", async () => {
+    const f = fakeDeps({ current: current43, remoteTree: "tree-local" });
+    expect(await main([], f.deps)).toBe(0);
+    expect(f.git.find((a) => a[0] === "push")).toBeUndefined();
+    expect(ghCalls(f, "pr", "create")).toHaveLength(1);
+    expect(ghCalls(f, "pr", "merge")).toHaveLength(1);
+  });
+  it("does not recreate a PR the maintainer closed without merging", async () => {
+    const f = fakeDeps({ current: current43, closedUnmerged: "9\n" });
+    expect(await main([], f.deps)).toBe(0);
+    expect(f.git).toEqual([]); expect(f.writes).toEqual([]);
+    expect(f.gh.map((a) => a.slice(0, 2))).toEqual([["pr", "list"]]);
+    expect(f.logs.join("\n")).toContain("version 1.0.3.44 rejected by maintainer (PR #9 closed without merging)");
+  });
+  it("auto-merge failure: no automerge label, needs-human, specific comment, issue, exit 1", async () => {
+    const f = fakeDeps({ current: current43, mergeError: "gh pr merge exited with 1: Pull request is not mergeable: auto-merge is not allowed" });
+    expect(await main([], f.deps)).toBe(1);
+    expect(addedLabels(f)).toEqual([LABEL_BUMP, LABEL_NEEDS_HUMAN]);
+    expect(removedLabels(f)).toEqual([LABEL_AUTOMERGE]);
+    const comment = ghCalls(f, "pr", "comment")[0];
+    expect(comment[comment.length - 1]).toContain(AUTOMERGE_FAILURE_REASON);
+    expect(comment[comment.length - 1]).toContain("auto-merge is not allowed");
+    const issue = ghCalls(f, "issue", "create")[0];
+    expect(issue).toContain("Upstream bot failure: auto-merge could not be enabled");
+    expect(issue[issue.length - 1]).toContain("PR #77");
+  });
+  it("masks the bot token and token-shaped strings in issues and comments", async () => {
+    const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    expect(maskSecrets(`x ${tok} y github_pat_11AAAA_bbbb z ghs_short`, {})).toBe("x *** y *** z ***");
+    expect(maskSecrets("token=s3cretvalue!", { GH_TOKEN: "s3cretvalue!" })).toBe("token=***");
+    expect(maskSecrets("nothing here", { GH_TOKEN: "abc" })).toBe("nothing here");
+    const f = fakeDeps({ fetchError: `HTTP 401 for https://x?token=${tok}`, env: { GH_TOKEN: tok } });
+    expect(await main([], f.deps)).toBe(1);
+    const issue = ghCalls(f, "issue", "create")[0];
+    expect(issue.join(" ")).not.toContain(tok);
+    expect(issue[issue.length - 1]).toContain("token=***");
+    expect(f.errors.join("\n")).not.toContain(tok);
+  });
   it("uses the base branch in the branch name and PR base", async () => {
     const f = fakeDeps({ current: current43 });
     expect(await main(["--base-branch", "qa/bump-sim"], f.deps)).toBe(0);
-    expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-B", "upstream/qa/bump-sim/v1.0.3.44"]);
+    expect(f.git.find((a) => a[0] === "fetch")).toEqual(["fetch", "--quiet", "origin", "qa/bump-sim"]);
+    expect(f.git.find((a) => a[0] === "checkout")).toEqual(["checkout", "-q", "-B", "upstream/qa/bump-sim/v1.0.3.44", "FETCH_HEAD"]);
     const create = ghCalls(f, "pr", "create")[0];
     expect(create[create.indexOf("--base") + 1]).toBe("qa/bump-sim");
     expect(create[create.indexOf("--head") + 1]).toBe("upstream/qa/bump-sim/v1.0.3.44");
@@ -265,7 +331,7 @@ describe("upstream-check orchestration", () => {
     expect(await main([], f.deps)).toBe(1);
     expect(f.git.map((a) => a[0])).toEqual(["status"]);
     expect(f.writes).toEqual([]);
-    expect(ghCalls(f, "pr").map((a) => a[1])).toEqual(["list"]);
+    expect(ghCalls(f, "pr").map((a) => a[1])).toEqual(["list", "list"]);
     expect(ghCalls(f, "issue", "create")).toHaveLength(1);
     expect(f.errors.join("\n")).toContain("uncommitted changes");
   });

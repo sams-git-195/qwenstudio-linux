@@ -354,9 +354,18 @@ function fixtureDiffers(deps: Deps, pristineIndexJs: string | undefined): boolea
   catch { return true; }
 }
 
+/** Masks the bot token (and anything shaped like a GitHub token) before text reaches a public issue/comment/log. */
+export function maskSecrets(text: string, env: NodeJS.ProcessEnv): string {
+  let out = text;
+  const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
+  if (token && token.length >= 8) out = out.split(token).join("***");
+  return out.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]+|\bgithub_pat_[A-Za-z0-9_]+/g, "***");
+}
+
 /** Spec step 9: one open issue per short reason (comment on it if it already exists). Returns exit code 1. */
-function reportFailure(deps: Deps, opts: CliOptions, repo: string, reason: string, detail: string, feed?: FeedInfo): number {
+function reportFailure(deps: Deps, opts: CliOptions, repo: string, reason: string, rawDetail: string, feed?: FeedInfo): number {
   const title = `Upstream bot failure: ${reason.replace(/"/g, "'")}`;
+  const detail = maskSecrets(rawDetail, deps.env);
   deps.error(`${title}\n${detail}`);
   if (opts.dryRun) { deps.error("[dry-run] would open/update a needs-human issue with the above"); return 1; }
   const runUrl = `${deps.env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}/actions/runs/${deps.env.GITHUB_RUN_ID ?? "local"}`;
@@ -373,7 +382,7 @@ function reportFailure(deps: Deps, opts: CliOptions, repo: string, reason: strin
       "--json", "number,title", "--jq", `.[] | select(.title == "${title}") | .number`]).trim().split("\n")[0];
     if (existing) deps.gh(["issue", "comment", existing, "--repo", repo, "--body", body]);
     else deps.gh(["issue", "create", "--repo", repo, "--title", title, "--label", LABEL_NEEDS_HUMAN, "--body", body]);
-  } catch (e) { deps.error(`could not open/update the failure issue: ${errMsg(e)}`); }
+  } catch (e) { deps.error(`could not open/update the failure issue: ${maskSecrets(errMsg(e), deps.env)}`); }
   return 1;
 }
 
@@ -382,10 +391,32 @@ export function foreignAuthors(authorLines: string, botIdentity: string): string
   return [...new Set(authorLines.split("\n").map((l) => l.trim()).filter((l) => l && l !== botIdentity))];
 }
 
-function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): void {
+export const AUTOMERGE_FAILURE_REASON =
+  "auto-merge could not be enabled -- check the repository setting 'Allow auto-merge' and the branch protection requiring ci-status";
+
+/** Posts the needs-human comment unless an identical one is already on the PR. */
+function commentFailure(deps: Deps, repo: string, pr: string, checks: CheckResult[]): void {
+  const { marker, body } = renderFailureComment(checks);
+  const existing = deps.gh(["pr", "view", pr, "--repo", repo, "--json", "comments", "--jq", ".comments[].body"], true);
+  if (!existing.includes(marker)) deps.gh(["pr", "comment", pr, "--repo", repo, "--body", maskSecrets(body, deps.env)]);
+}
+
+/** Creates/updates the bump branch and PR. Returns the process exit code. */
+function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): number {
   assertSafeBranch(plan.branch, opts.base);
   const name = deps.env.BOT_GIT_NAME ?? "qwenstudio-linux-bot";
   const email = deps.env.BOT_GIT_EMAIL ?? "noreply@github.com";
+  const body = maskSecrets(plan.body, deps.env);
+
+  // A maintainer who closed the bot's PR without merging has rejected this version: do not
+  // recreate it every night. (Deleting the closed PR's branch does not change this; the
+  // version is retried only when upstream moves on or the maintainer bumps by hand.)
+  const rejected = deps.gh(["pr", "list", "--repo", repo, "--head", plan.branch, "--base", opts.base, "--state", "closed",
+    "--json", "number,mergedAt", "--jq", ".[] | select(.mergedAt == null) | .number"]).trim().split("\n")[0];
+  if (rejected) {
+    deps.log(`version ${plan.feed.version}.${plan.feed.build} rejected by maintainer (PR #${rejected} closed without merging); not recreating`);
+    return 0;
+  }
 
   // Reuse the open PR for this branch if there is one. If a maintainer has already pushed
   // their own commits to it (e.g. a sidecars.json fix after a needs-human), a force-push from
@@ -396,52 +427,78 @@ function publish(deps: Deps, opts: CliOptions, repo: string, plan: Plan): void {
     const foreign = foreignAuthors(authors, `${name} <${email}>`);
     if (foreign.length) {
       deps.log(`PR #${pr} (${plan.branch}) has commits by ${foreign.join(", ")}; leaving the branch and PR untouched`);
-      return;
+      return 0;
     }
   }
 
   const dirty = deps.git(["status", "--porcelain", "--untracked-files=no"]).trim();
   if (dirty) throw new Error(`working tree has uncommitted changes; refusing to run:\n${dirty}`);
 
-  // Fresh branch from the checked-out base every run: re-runs converge to the same content.
-  deps.git(["checkout", "-B", plan.branch]);
+  // Branch from the remote base explicitly (never from whatever HEAD happens to be), write the
+  // bump, commit. Re-runs therefore always produce the same tree for the same feed + base.
+  deps.git(["fetch", "--quiet", "origin", opts.base]);
+  deps.git(["checkout", "-q", "-B", plan.branch, "FETCH_HEAD"]); // FETCH_HEAD: independent of the clone's refspec config
   const paths = deps.writeWorkspace({ manifest: plan.next, changelogLine: plan.changelogLine, pristineIndexJs: plan.pristineIndexJs });
   deps.git(["add", "--", ...paths]);
-  if (deps.git(["diff", "--cached", "--name-only"]).trim()) {
-    deps.git(["-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-q", "-m", plan.title]);
-  } else {
-    deps.log("nothing new to commit on the bump branch");
+  deps.git(["-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-q", "-m", plan.title]);
+
+  // Idempotency: only push when the tree differs from what is already on the remote branch.
+  // Pushing an identical tree under a new SHA would re-trigger CI, strip CI's needs-human label
+  // and re-arm auto-merge every night for nothing.
+  let unchanged = false;
+  if (deps.git(["ls-remote", "--heads", "origin", plan.branch]).trim()) {
+    deps.git(["fetch", "--quiet", "origin", plan.branch]);
+    unchanged = deps.git(["rev-parse", "HEAD^{tree}"]).trim() === deps.git(["rev-parse", "FETCH_HEAD^{tree}"]).trim();
   }
-  deps.git(["push", "-f", "origin", `HEAD:refs/heads/${plan.branch}`]);
-  deps.log(`pushed ${plan.branch}`);
+  if (unchanged) {
+    deps.log(`${plan.branch}: unchanged on origin, nothing to push`);
+    if (pr) { deps.log(`PR #${pr} left as is`); return 0; }
+  } else {
+    deps.git(["push", "-f", "origin", `HEAD:refs/heads/${plan.branch}`]);
+    deps.log(`pushed ${plan.branch}`);
+  }
 
   if (pr) {
-    deps.gh(["pr", "edit", pr, "--repo", repo, "--title", plan.title, "--body", plan.body]);
+    deps.gh(["pr", "edit", pr, "--repo", repo, "--title", plan.title, "--body", body]);
     deps.log(`updated existing PR #${pr}`);
   } else {
-    const url = deps.gh(["pr", "create", "--repo", repo, "--base", opts.base, "--head", plan.branch, "--title", plan.title, "--body", plan.body]).trim();
+    const url = deps.gh(["pr", "create", "--repo", repo, "--base", opts.base, "--head", plan.branch, "--title", plan.title, "--body", body]).trim();
     pr = url.split("/").pop() ?? "";
     if (!/^\d+$/.test(pr)) throw new Error(`could not determine the PR number from gh output: ${url}`);
     deps.log(`opened PR #${pr}`);
   }
 
-  // One gh call per label, tolerant of failure: a label missing from the repo (or already
-  // absent from the PR) must not abort the run. ci.yml's labeller recreates needs-human itself.
-  for (const l of plan.decision.addLabels) deps.gh(["pr", "edit", pr, "--repo", repo, "--add-label", l], true);
-  for (const l of plan.decision.removeLabels) deps.gh(["pr", "edit", pr, "--repo", repo, "--remove-label", l], true);
+  // Label edits tolerate failure: a label missing from the repo (or already absent from the PR)
+  // must not abort the run. ci.yml's labeller recreates needs-human itself.
+  const label = (add: string[], remove: string[]) => {
+    for (const l of add) deps.gh(["pr", "edit", pr, "--repo", repo, "--add-label", l], true);
+    for (const l of remove) deps.gh(["pr", "edit", pr, "--repo", repo, "--remove-label", l], true);
+  };
+  label([LABEL_BUMP], []);
 
-  if (plan.decision.autoMerge) {
-    // Re-enabling auto-merge on a PR that already has it is rejected by GitHub; skip when armed.
-    const armed = deps.gh(["pr", "view", pr, "--repo", repo, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest.enabledAt // empty"]).trim();
-    if (armed) deps.log(`PR #${pr}: all pre-flight checks passed; auto-merge already enabled (${armed})`);
-    else { deps.gh(["pr", "merge", pr, "--repo", repo, "--auto", "--squash"]); deps.log(`PR #${pr}: all pre-flight checks passed; auto-merge enabled`); }
-  } else {
+  if (!plan.decision.autoMerge) {
     deps.gh(["pr", "merge", pr, "--repo", repo, "--disable-auto"], true);
-    const { marker, body } = renderFailureComment(plan.checks);
-    const existing = deps.gh(["pr", "view", pr, "--repo", repo, "--json", "comments", "--jq", ".comments[].body"], true);
-    if (!existing.includes(marker)) deps.gh(["pr", "comment", pr, "--repo", repo, "--body", body]);
+    label([LABEL_NEEDS_HUMAN], [LABEL_AUTOMERGE]);
+    commentFailure(deps, repo, pr, plan.checks);
     deps.log(`PR #${pr}: pre-flight checks failed; labelled ${LABEL_NEEDS_HUMAN}, no auto-merge`);
+    return 0;
   }
+
+  // All checks passed: arm auto-merge FIRST; the automerge label only ever reflects a PR that
+  // really has it. Re-enabling on a PR that already has it is rejected by GitHub, so skip then.
+  const armed = deps.gh(["pr", "view", pr, "--repo", repo, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest.enabledAt // empty"]).trim();
+  if (!armed) {
+    try { deps.gh(["pr", "merge", pr, "--repo", repo, "--auto", "--squash"]); }
+    catch (e) {
+      const output = `${AUTOMERGE_FAILURE_REASON}\n${errMsg(e)}`;
+      label([LABEL_NEEDS_HUMAN], [LABEL_AUTOMERGE]);
+      commentFailure(deps, repo, pr, [...plan.checks, { name: "auto-merge enabled", ok: false, output }]);
+      return reportFailure(deps, opts, repo, "auto-merge could not be enabled", `PR #${pr}\n${output}`, plan.feed);
+    }
+  }
+  label([LABEL_AUTOMERGE], [LABEL_NEEDS_HUMAN]);
+  deps.log(`PR #${pr}: all pre-flight checks passed; auto-merge ${armed ? `already enabled (${armed})` : "enabled"}`);
+  return 0;
 }
 
 /** Returns the process exit code. Never calls process.exit. */
@@ -471,8 +528,7 @@ export async function main(argv = process.argv.slice(2), deps: Deps = realDeps()
     const plan = buildPlan({ feed, current, base: opts.base, preflight, fixtureChanged: fixtureDiffers(deps, preflight.pristineIndexJs) });
 
     if (opts.dryRun) { deps.log(renderDryRun(plan)); return 0; }
-    publish(deps, opts, repo, plan);
-    return 0;
+    return publish(deps, opts, repo, plan);
   } catch (e) {
     return reportFailure(deps, opts, repo, "unexpected error", e instanceof Error ? (e.stack ?? e.message) : String(e), feed);
   }
