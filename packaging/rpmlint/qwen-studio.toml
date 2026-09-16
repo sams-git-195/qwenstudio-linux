@@ -1,0 +1,30 @@
+# rpmlint configuration for the unofficial Qwen Studio package (spec §11.3).
+#
+# Captured against rpmlint 2.6.1 running in the fedora:41 container image (see
+# task B5 report for the full run). Only findings inherent to the verbatim
+# Electron/upstream payload -- or to fpm 1.17's fixed, unconfigurable rpm
+# scriptlet-analysis and dependency-analysis heuristics -- are filtered here;
+# anything about the desktop file, control fields, or maintainer scripts that
+# we control was fixed in packaging/electron-builder.base.json instead (see
+# that file's rpm.afterInstall/afterRemove/description, and
+# packaging/rpm/after-install.tpl, for the fixes that avoided needing a
+# filter here).
+Filters = [
+  # Prebuilt Electron binaries and the bun/uv sidecars are not stripped upstream.
+  "unstripped-binary-or-object",
+  # The Electron binary and libffmpeg.so carry an $ORIGIN RUNPATH to find their bundled libraries in /opt.
+  "binary-or-shlib-defines-rpath",
+  # electron-builder installs under /opt/<productName>, which is not a standard RPM directory.
+  "dir-or-file-in-opt",
+  # The package ships no man page or docs by design; documentation lives in the GitHub repository.
+  "no-documentation",
+  # chrome-sandbox is Electron/Chromium's own verbatim setuid sandbox helper binary; its
+  # setuid()/setgid() handling is upstream Chromium code, not something this packaging controls.
+  "missing-call-to-setgroups-before-setuid",
+  # rpm.depends declares explicit package names (not sonames) so that the runtime libraries
+  # qwen-studio needs are always present -- fpm's rpm backend disables RPM's automatic
+  # dependency generator, and switching to soname-form Requires would conflict with
+  # tests/unit/deps.test.ts, which pins these literal names and verifies their coverage
+  # against `readelf -d`/`ldd` of the built binary (see task B5 report "concerns").
+  "explicit-lib-dependency",
+]

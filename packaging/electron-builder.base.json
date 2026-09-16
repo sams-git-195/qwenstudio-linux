@@ -40,7 +40,10 @@
       "alsa-lib", "libdrm", "mesa-libgbm", "libxkbcommon", "at-spi2-atk", "atk", "cups-libs", "dbus-libs", "expat",
       "libX11", "libXcomposite", "libXdamage", "libXext", "libXfixes", "libXrandr", "pango", "cairo", "glib2", "nspr",
       "libxcb", "libgcc", "libstdc++", "systemd-libs", "glibc"
-    ]
+    ],
+    "afterInstall": "packaging/rpm/after-install.tpl",
+    "afterRemove": "packaging/rpm/after-remove.tpl",
+    "description": "Unofficial Linux packaging of Qwen Studio, Alibaba's desktop client for\nthe Qwen Chat web app. Not affiliated with Alibaba Cloud."
   },
   "appImage": {}
 }

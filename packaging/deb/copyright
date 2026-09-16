@@ -1,0 +1,25 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Qwen Studio
+Upstream-Contact: sams-git-195 <samheard95@gmail.com>
+Source: https://github.com/sams-git-195/qwenstudio-linux
+
+Files: *
+Copyright: 2026 sams-git-195
+License: MIT
+ This package is the unofficial Linux packaging of Qwen Studio, Alibaba's
+ desktop client for chat.qwen.ai, and is not affiliated with Alibaba Cloud.
+ The packaging scripts and patches produced by this project are licensed
+ under the MIT license (see the LICENSE file in the source repository at
+ the address above).
+
+Files: opt/Qwen*
+Copyright: The Qwen Studio upstream authors (Alibaba Cloud) and the Electron
+ authors (OpenJS Foundation and contributors).
+License: proprietary-and-other
+ The application payload installed under /opt is redistributed verbatim
+ from the upstream Qwen Studio Windows installer, re-packaged for Linux,
+ together with the unmodified Electron runtime and its bundled third-party
+ components (Chromium, ffmpeg, ANGLE/SwiftShader, the Vulkan loader). Each
+ of these components retains its own upstream license; this project does
+ not relicense them. See https://github.com/sams-git-195/qwenstudio-linux
+ for details.
