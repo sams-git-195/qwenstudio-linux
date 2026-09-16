@@ -16,10 +16,18 @@ Files: opt/Qwen*
 Copyright: The Qwen Studio upstream authors (Alibaba Cloud) and the Electron
  authors (OpenJS Foundation and contributors).
 License: proprietary-and-other
- The application payload installed under /opt is redistributed verbatim
- from the upstream Qwen Studio Windows installer, re-packaged for Linux,
- together with the unmodified Electron runtime and its bundled third-party
- components (Chromium, ffmpeg, ANGLE/SwiftShader, the Vulkan loader). Each
- of these components retains its own upstream license; this project does
- not relicense them. See https://github.com/sams-git-195/qwenstudio-linux
- for details.
+ The application payload installed under /opt is redistributed with minimal
+ Linux-compatibility patches (see patches/ and src/app/ in the source
+ repository) from the upstream Qwen Studio Windows installer, re-packaged
+ for Linux, together with the unmodified Electron runtime and its bundled
+ third-party components (Chromium, ffmpeg, ANGLE/SwiftShader, the Vulkan
+ loader). Each of these components retains its own upstream license; this
+ project does not relicense them. See
+ https://github.com/sams-git-195/qwenstudio-linux for details.
+
+Files: usr/share/icons/*
+Copyright: Alibaba Cloud
+License: proprietary-and-other
+ These icons are rendered (via scripts/icons.ts) directly from the upstream
+ Qwen Studio installer's icon.png and carry the same upstream license as the
+ rest of the application payload; see the "Files: opt/Qwen*" stanza above.

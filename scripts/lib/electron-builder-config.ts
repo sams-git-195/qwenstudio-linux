@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, rmSync, cpSync, mkdirSync, renameSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, cpSync, mkdirSync, renameSync, existsSync, readdirSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { run } from "./exec.js";
 import { readUpstream, readSidecars } from "./manifest.js";
@@ -11,15 +11,40 @@ import { ROOT, BUILD_DIR, DIST_DIR, UNPACKED_DIR, CACHE_DIR } from "./paths.js";
 // content is version-derived, so it is generated at package time (packageTarget),
 // not inside the pure buildConfig() that tests/unit/electron-builder-config.test.ts
 // exercises without touching the filesystem.
+//
+// The date is SOURCE_DATE_EPOCH (seconds since epoch, https://reproducible-builds.org/specs/source-date-epoch/)
+// when set, else upstream.json's releaseDate, rather than the build's wall-clock time -- so two
+// builds of the same upstream release produce byte-identical changelog text.
+function debianChangelogDate(): string {
+  const sourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
+  const date = sourceDateEpoch ? new Date(Number(sourceDateEpoch) * 1000) : new Date(readUpstream(ROOT).releaseDate);
+  return date.toUTCString().replace(/GMT$/, "+0000");
+}
+
 function debianChangelogText(v: DerivedVersions): string {
-  const date = new Date().toUTCString().replace(/GMT$/, "+0000");
   return (
     `qwen-studio (${v.debVersion}) unstable; urgency=medium\n\n` +
     `  * Unofficial Linux packaging of upstream Qwen Studio ${v.upstreamLabel}.\n` +
     `  * See https://github.com/sams-git-195/qwenstudio-linux/releases for\n` +
     `    the full release history.\n\n` +
-    ` -- sams-git-195 <samheard95@gmail.com>  ${date}\n`
+    ` -- sams-git-195 <samheard95@gmail.com>  ${debianChangelogDate()}\n`
   );
+}
+
+// lintian's shared-library-is-executable flags Electron's bundled .so files, which carry the
+// executable bit as shipped in Electron's own official zip (assemble.ts preserves upstream file
+// modes verbatim, spec §10.4). Per controller ruling in task B5 fix round 1, this is fixed here
+// rather than suppressed: the exec bit is not needed for the dynamic loader to mmap/dlopen a
+// shared object (only the executable bit on the actual ELF *executable*, e.g. qwen-studio itself,
+// matters for that), so it is stripped in the per-target packaging stage copy only -- the shared
+// build/linux-unpacked/ output that assemble.ts produces (and that AppImage packages directly)
+// stays byte-for-byte verbatim.
+function stripExecFromSharedLibs(dir: string): void {
+  for (const entry of readdirSync(dir, { recursive: true }) as string[]) {
+    if (/\.so(\.\d+)*$/.test(entry)) {
+      chmodSync(path.join(dir, entry), 0o644);
+    }
+  }
 }
 
 export type Target = "AppImage" | "deb" | "rpm";
@@ -48,6 +73,7 @@ export function packageTarget(target: Target, v: DerivedVersions): void {
   const stage = path.join(BUILD_DIR, `stage-${dir}`);
   rmSync(stage, { recursive: true, force: true });
   cpSync(UNPACKED_DIR, stage, { recursive: true });
+  stripExecFromSharedLibs(stage);
   const cfgPath = path.join(BUILD_DIR, `electron-builder.${dir}.json`);
   const cfg = buildConfig(target, v) as Record<string, any>;
   if (target === "deb") {

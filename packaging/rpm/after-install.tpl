@@ -23,3 +23,9 @@ fi
 if hash update-desktop-database 2>/dev/null; then
     update-desktop-database /usr/share/applications || true
 fi
+
+# electron-builder's stock after-install.tpl also installs an AppArmor profile
+# into /etc/apparmor.d (Ubuntu 24+ only). That block is intentionally omitted
+# here: AppArmor is a Debian/Ubuntu LSM and Fedora/RHEL use SELinux instead, so
+# there is nothing on an rpm-based system for it to install into; the bundled
+# resources/apparmor-profile file is simply unused on this target.

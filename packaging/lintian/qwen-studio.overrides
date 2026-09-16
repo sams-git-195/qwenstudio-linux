@@ -11,7 +11,9 @@
 # fixed in packaging/electron-builder.base.json instead (see that file, and
 # packaging/deb/copyright and scripts/lib/electron-builder-config.ts, for the
 # debian-changelog-file-missing-or-wrong-name / no-copyright-file fixes that
-# were made there rather than suppressed here).
+# were made there rather than suppressed here; scripts/lib/electron-builder-config.ts's
+# stripExecFromSharedLibs() likewise fixes shared-library-is-executable there,
+# not here).
 
 # Electron ships its own copies of ffmpeg, EGL/GLES, SwiftShader and Vulkan loaders; they cannot be unbundled.
 embedded-library
@@ -19,6 +21,3 @@ embedded-library
 unstripped-binary-or-object
 # electron-builder installs to /opt/<productName>; this layout is required by the auto-updater and the upstream code.
 dir-or-file-in-opt
-# Electron ships its bundled shared libraries (libEGL.so, libGLESv2.so, libffmpeg.so, libvk_swiftshader.so, libvulkan.so.1)
-# with the executable bit set in its own official zip; assemble.ts preserves upstream file modes verbatim (spec §10.4).
-shared-library-is-executable

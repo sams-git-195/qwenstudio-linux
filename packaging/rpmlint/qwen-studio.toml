@@ -1,14 +1,24 @@
 # rpmlint configuration for the unofficial Qwen Studio package (spec §11.3).
 #
 # Captured against rpmlint 2.6.1 running in the fedora:41 container image (see
-# task B5 report for the full run). Only findings inherent to the verbatim
-# Electron/upstream payload -- or to fpm 1.17's fixed, unconfigurable rpm
-# scriptlet-analysis and dependency-analysis heuristics -- are filtered here;
-# anything about the desktop file, control fields, or maintainer scripts that
-# we control was fixed in packaging/electron-builder.base.json instead (see
-# that file's rpm.afterInstall/afterRemove/description, and
-# packaging/rpm/after-install.tpl, for the fixes that avoided needing a
-# filter here).
+# task B5 report for the full run). Per spec §11.3, an E: tag may be filtered
+# here ONLY if it is caused by files shipped verbatim (or with only minimal
+# Linux-compatibility patches, see patches/ and src/app/) from the Electron
+# runtime or the upstream Qwen Studio app; anything about the desktop file,
+# control fields, dependencies, or maintainer scripts that this packaging
+# controls must instead be fixed in packaging/electron-builder.base.json /
+# packaging/rpm/*.tpl / scripts/lib/electron-builder-config.ts and rebuilt
+# (see those files' comments for the fixes that avoided needing a filter
+# here: rpm.afterInstall/afterRemove/description, and the rpm after-install
+# template, for update-alternatives-requirement-missing /
+# alternative-link-missing / alternative-generic-name-missing / spelling /
+# description-line-too-long).
+#
+# ONE exception to that rule: explicit-lib-dependency (see below) is a
+# deviation from spec §11.3 for that tag only, accepted by controller ruling
+# in task B5 (fix round 1). It is not evidence that "dependencies" in general
+# may be filtered -- every other dependency-shaped finding still gets fixed
+# in packaging, never suppressed.
 Filters = [
   # Prebuilt Electron binaries and the bun/uv sidecars are not stripped upstream.
   "unstripped-binary-or-object",
@@ -21,10 +31,16 @@ Filters = [
   # chrome-sandbox is Electron/Chromium's own verbatim setuid sandbox helper binary; its
   # setuid()/setgid() handling is upstream Chromium code, not something this packaging controls.
   "missing-call-to-setgroups-before-setuid",
-  # rpm.depends declares explicit package names (not sonames) so that the runtime libraries
-  # qwen-studio needs are always present -- fpm's rpm backend disables RPM's automatic
-  # dependency generator, and switching to soname-form Requires would conflict with
-  # tests/unit/deps.test.ts, which pins these literal names and verifies their coverage
-  # against `readelf -d`/`ldd` of the built binary (see task B5 report "concerns").
+  # DEVIATION (spec §11.3), accepted by controller ruling in task B5: fpm's rpm backend builds
+  # with AutoReqProv: no, so rpmbuild never generates the automatic soname-level Requires that
+  # rpmlint's explicit-lib-dependency check assumes exist as the alternative to an explicit
+  # dependency -- without AutoReqProv there IS no other mechanism, and explicit package-name
+  # Requires in rpm.depends is the only way this package declares the runtime libraries
+  # qwen-studio needs. Reformatting those entries to soname form (the only form rpmlint accepts
+  # unsuppressed) would satisfy rpmlint but break tests/unit/deps.test.ts, which pins the exact
+  # literal package-name strings in packaging/electron-builder.base.json and independently proves
+  # their completeness by intersecting `readelf -d`/`ldd` of the built qwen-studio binary against
+  # them. This is a rpmlint false positive for packages built with AutoReqProv disabled, not a
+  # real dependency defect -- see task B5 report "concerns" for the full analysis.
   "explicit-lib-dependency",
 ]
