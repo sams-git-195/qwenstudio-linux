@@ -1,0 +1,162 @@
+# Reusable build+test workflow (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# §11.2-11.4, §12.1). Triggered only via `workflow_call` -- `ci.yml` (Task C4) and `release.yml`
+# both call it with `uses: ./.github/workflows/build-and-test.yml`.
+#
+# NOTE for Task C4 / release.yml authors: a reusable workflow invoked with `uses:` appears as a
+# single node in the caller's job graph, so the caller cannot `needs:` the inner job names below
+# directly -- it can only `needs:` its own wrapper job (e.g. a `build-and-test:` job that has
+# `uses: ./.github/workflows/build-and-test.yml`). The inner job names are documented here so a
+# caller inspecting run logs/artifacts knows what to expect; they must stay stable:
+#   - `build`          -- spec §11.2 (full build), §11.3 (package linters), §10.8 (npm run verify).
+#                          Produces artifact `packages` (dist/, retention 7 days) -- this is the
+#                          workflow's real output, downloaded by release.yml to publish.
+#                          Also produces advisory artifact `appimagelint-report` (never fails the
+#                          job; ignored if absent).
+#   - `install-matrix` -- spec §11.4 (needs: build). One job per matrix leg, named
+#                          `${{ matrix.leg }}` (deb-ubuntu-22.04, deb-ubuntu-24.04, deb-debian-12,
+#                          rpm-fedora-40, rpm-fedora-41, appimage-ubuntu-22.04,
+#                          appimage-fedora-41). On failure each leg uploads artifact
+#                          `smoke-log-<leg>`.
+
+name: build-and-test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build packages
+    # Runner per spec §11.2. Fallback: switch to ubuntu-24.04 if GitHub retires the 22.04 image
+    # (also update the install-matrix `deb-ubuntu-24.04` leg's rationale comment if so, since that
+    # leg exists specifically to prove the 24.04 t64 package renames are handled).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install build tools
+        # lintian/rpmlint are intentionally NOT installed here -- they run inside pinned
+        # debian:12 / fedora:41 containers below (controller ruling), matching the exact linter
+        # versions packaging/lintian/qwen-studio.overrides and packaging/rpmlint/qwen-studio.toml
+        # were tuned against (see task B5 report). binutils/xz-utils/zstd are installed explicitly
+        # so `ar`/`readelf`/`xz`/`zstd` are available regardless of what the runner image ships by
+        # default (npm run verify needs ar/tar/xz/zstd/rpm/rpm2cpio/cpio/desktop-file-validate but
+        # not dpkg; tests/unit/deps.test.ts needs readelf, from binutils).
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full unzip rpm desktop-file-utils libfuse2 xvfb xauth cpio pipx binutils xz-utils zstd
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: downloads-${{ hashFiles('upstream.json', 'sidecars.json') }}
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run verify
+
+      # Controller ruling: run test:unit AFTER build (not before), so deps.test.ts's ldd/readelf
+      # check (spec §10.7, skipped when build/linux-unpacked is absent) actually executes in CI
+      # instead of silently skipping.
+      - run: npm run test:unit
+
+      - name: lintian (debian:12 container; errors fail)
+        # Runs in debian:12 to match the lintian version (2.116.3+deb12u1) the overrides file at
+        # packaging/lintian/qwen-studio.overrides was tuned against. Per that file's own header and
+        # task B5's report, overrides are applied via --suppress-tags-from-file at lint time (never
+        # shipped inside the package).
+        run: |
+          docker run --rm \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/packaging:/packaging:ro" \
+            debian:12 bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq lintian >/dev/null
+              lintian --suppress-tags-from-file /packaging/lintian/qwen-studio.overrides --fail-on error --no-tag-display-limit /dist/*.deb
+            '
+
+      - name: rpmlint (fedora:41 container; errors fail)
+        # Runs in fedora:41 to match rpmlint 2.6.1, the version packaging/rpmlint/qwen-studio.toml
+        # was tuned against (task B5 report). rpmlint 2.6.1 has no --fail-on flag, so this fails on
+        # rpmlint's own non-zero exit (propagated through the pipe via pipefail) AND independently
+        # greps the summary line for a non-"0 errors" result, matching how task B5 validated the
+        # config.
+        run: |
+          docker run --rm \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/packaging:/packaging:ro" \
+            fedora:41 bash -c '
+              set -euo pipefail
+              dnf install -y -q rpmlint >/dev/null
+              rpmlint -c /packaging/rpmlint/qwen-studio.toml /dist/*.rpm | tee /tmp/rpmlint.txt
+              grep -Eq "; 0 errors" /tmp/rpmlint.txt
+            '
+
+      - name: appimagelint (advisory)
+        continue-on-error: true
+        run: |
+          pipx install git+https://github.com/TheAssassin/appimagelint@27f5d08808fd2a96543f4efb72e1b824b3e32652
+          ~/.local/bin/appimagelint dist/*.AppImage | tee appimagelint.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appimagelint-report
+          path: appimagelint.txt
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  install-matrix:
+    name: ${{ matrix.leg }}
+    needs: build
+    # Fallback: ubuntu-24.04 if 22.04 is retired (see the `build` job's runs-on comment).
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { leg: deb-ubuntu-22.04, image: "ubuntu:22.04", format: deb }
+          - { leg: deb-ubuntu-24.04, image: "ubuntu:24.04", format: deb }
+          - { leg: deb-debian-12, image: "debian:12", format: deb }
+          - { leg: rpm-fedora-40, image: "fedora:40", format: rpm }
+          - { leg: rpm-fedora-41, image: "fedora:41", format: rpm }
+          - { leg: appimage-ubuntu-22.04, image: "ubuntu:22.04", format: appimage }
+          - { leg: appimage-fedora-41, image: "fedora:41", format: appimage }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Install and smoke in ${{ matrix.image }}
+        run: |
+          mkdir -p logs
+          docker run --rm --shm-size=1g \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/tests:/tests:ro" -v "$PWD/logs:/logs" \
+            -e SMOKE_LOG=/logs/smoke.log \
+            "${{ matrix.image }}" bash /tests/install/install-and-smoke.sh "${{ matrix.format }}"
+
+      # Spec §11.5 step 7: "always upload it as a job artifact" -- if-no-files-found: ignore keeps
+      # this a no-op on a passing leg where no smoke.log was ever written to the mounted /logs dir.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-log-${{ matrix.leg }}
+          path: logs/
+          if-no-files-found: ignore
