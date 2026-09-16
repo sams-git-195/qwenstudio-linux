@@ -2,7 +2,7 @@
 # Idempotently creates (or updates the color of) the GitHub labels this repo's workflows and
 # issue templates depend on: needs-human, automerge, upstream-bump (Task D3/D4 bot, spec
 # docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md §12.3), dependencies
-# (.github/dependabot.yml), qa-defect and packaging (issue templates).
+# (.github/dependabot.yml), qa-defect, packaging and bug (issue templates).
 #
 # Safe to re-run any number of times -- `gh label create --force` creates the label if it's
 # missing or updates its color in place if it already exists with a different one. Referenced
@@ -51,6 +51,7 @@ labels=(
   "dependencies:0366d6"
   "qa-defect:b60205"
   "packaging:5319e7"
+  "bug:d73a4a"
 )
 
 if [ "$dry_run" != true ] && ! command -v gh >/dev/null 2>&1; then

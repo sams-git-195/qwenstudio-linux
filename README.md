@@ -20,7 +20,7 @@ Download from the [latest release](https://github.com/sams-git-195/qwenstudio-li
 
 The AppImage needs `libfuse2` (Ubuntu 22.04+/Debian: `sudo apt install libfuse2`). Without FUSE, run `./qwen-studio-<version>-x86_64.AppImage --appimage-extract` and start `squashfs-root/AppRun`.
 
-Verify downloads with the `SHA256SUMS` asset (`sha256sum -c SHA256SUMS`) or `gh attestation verify <file> --owner sams-git-195`.
+Verify downloads with the `SHA256SUMS` asset (`sha256sum -c --ignore-missing SHA256SUMS`) or `gh attestation verify <file> --owner sams-git-195`.
 
 ## Updates
 

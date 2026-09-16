@@ -1,4 +1,3 @@
-
 # Contributor Covenant Code of Conduct
 
 ## Our Pledge
@@ -37,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the maintainer, @sams-git-195, via a private [GitHub security advisory](https://github.com/sams-git-195/qwenstudio-linux/security/advisories/new) on this repository, a GitHub issue addressed to @sams-git-195, or email to <samheard95@gmail.com>. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the maintainer, @sams-git-195, via a private [GitHub security advisory](https://github.com/sams-git-195/qwenstudio-linux/security/advisories/new) on this repository, or email to <samheard95@gmail.com>. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

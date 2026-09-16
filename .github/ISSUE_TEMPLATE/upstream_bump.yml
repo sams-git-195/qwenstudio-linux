@@ -1,5 +1,5 @@
 name: Upstream bump problem
-description: A new upstream version failed to package (used by humans and by the bot)
+description: A new upstream version failed to package
 labels: [upstream-bump]
 body:
   - type: input

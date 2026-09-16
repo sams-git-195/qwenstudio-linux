@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
+import { readSidecars } from "../../scripts/lib/manifest.js";
 
 const read = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
@@ -16,6 +17,9 @@ describe("governance documents", () => {
   });
   it("THIRD_PARTY_NOTICES lists every redistributed component", () => {
     const md = read("THIRD_PARTY_NOTICES.md");
-    for (const s of ["Qwen Studio", "Electron 35.1.4", "Chromium", "bun 1.2.10", "uv 0.12.15", "electron-builder"]) expect(md).toContain(s);
+    const sc = readSidecars();
+    for (const s of ["Qwen Studio", `Electron ${sc.electron.version}`, "Chromium", `bun ${sc.bun.version}`, `uv ${sc.uv.version}`, "electron-builder"]) {
+      expect(md, `THIRD_PARTY_NOTICES.md must mention ${s}`).toContain(s);
+    }
   });
 });
