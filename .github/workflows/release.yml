@@ -246,7 +246,7 @@ jobs:
           fi
           gh release view "$TAG" --repo "$REPO"
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.deb
