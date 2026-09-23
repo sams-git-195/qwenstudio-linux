@@ -40,7 +40,7 @@ jobs:
     outputs:
       build_needed: ${{ steps.decide.outputs.build_needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -82,7 +82,7 @@ jobs:
     steps:
       # fetch-depth: 0 is required by wagoid/commitlint-github-action, which computes the PR's
       # commit range from local git history -- a shallow clone makes it fail to resolve commits.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
