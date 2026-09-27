@@ -77,7 +77,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -129,7 +129,7 @@ jobs:
       # there. persist-credentials: false keeps GITHUB_TOKEN out of .git/config while `npm ci`
       # runs third-party install scripts; the push credential is added to the origin remote only
       # after that, in "Authenticate origin for the tag push" below.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -279,7 +279,7 @@ jobs:
       # Branch from the CURRENT main (not $GITHUB_SHA) so the PR is mergeable even if main moved
       # on during the build. `token:` authenticates the clone itself; persist-credentials: false
       # then keeps the PAT out of .git/config while `npm ci` runs third-party install scripts.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           token: ${{ secrets.UPSTREAM_BOT_TOKEN }}
