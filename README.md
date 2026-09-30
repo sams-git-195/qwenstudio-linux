@@ -44,7 +44,7 @@ Qwen Studio is proprietary software by Alibaba; your use of it is governed by Al
 1. The upstream Windows installer is downloaded from `download.qwen.ai` and verified against the SHA-512 pinned in `upstream.json`.
 2. `app.asar` is extracted, two patches from `patches/` are applied (Linux platform detection; updater pointed at this repository), and a small notify-only updater module (`src/app/linux-update.js`) is added.
 3. The app is assembled onto the official Electron Linux runtime with Linux builds of `bun` and `uv`/`uvx` (pinned in `sidecars.json`) and packaged with electron-builder.
-4. A daily bot checks upstream for new versions and opens an auto-merging pull request; merges to `main` publish releases automatically.
+4. An on-demand bot (run manually from the Actions tab) checks upstream for new versions and opens an auto-merging pull request; merges to `main` publish releases automatically.
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/RELEASING.md](docs/RELEASING.md).
 
