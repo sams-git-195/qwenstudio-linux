@@ -88,14 +88,6 @@ recreates `automerge`, and `ci.yml`'s `flag-needs-human` recreates `needs-human`
 recreates `upstream-bump`, `dependencies`, `qa-defect`, `packaging` or `bug`, so treat this script's
 output as the source of truth rather than relying on any workflow's fallback.
 
-## Maintenance
-
-- **Scheduled workflows auto-disable.** GitHub disables a `schedule` trigger after 60 days with
-  no repository activity. If upstream is quiet for two months and nothing else gets pushed,
-  `upstream-check.yml`'s nightly run silently stops until someone re-enables it from the Actions
-  tab (any push resets the clock). Check the Actions tab periodically, or after any long quiet
-  period, to confirm `upstream-check` is still enabled.
-
 ## Verification checklist
 
 Run these after applying the settings above (or periodically, to confirm nothing drifted):

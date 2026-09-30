@@ -1,4 +1,4 @@
-# Nightly upstream-tracking bot (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
+# Upstream-tracking bot (manual dispatch only) (spec docs/superpowers/specs/2026-09-15-qwen-studio-linux-design.md
 # §12.3). Thin wrapper around scripts/upstream-check.ts (Task D3), which owns all the logic:
 # read the Windows update feed, compare with upstream.json, download + extract + pre-flight the
 # new installer, then create/update ONE branch `upstream/<base>/v<version>.<build>` and ONE PR,
@@ -35,9 +35,7 @@
 name: upstream-check
 
 on:
-  schedule:
-    # Daily 04:17 UTC (spec §12.3): off-peak for both the GitHub Actions fleet and the upstream CDN.
-    - cron: "17 4 * * *"
+  # Manual runs only: the daily schedule (spec §12.3) was removed. Trigger from the Actions tab.
   workflow_dispatch:
     inputs:
       feed_url:

@@ -141,7 +141,7 @@ label for `needs-human` on a failed upstream-bump PR instead of letting it auto-
 
 `release.yml` runs on every push to `main`. `plan` derives the git tag from
 `upstream.json` and skips the rest of the workflow when that tag already exists on
-origin (so a docs-only merge, a Dependabot bump, or the workflow's own CHANGELOG PR never
+origin (so a docs-only merge or the workflow's own CHANGELOG PR never
 re-release). Otherwise it re-runs the full `build-and-test.yml` and `publish` tags the built
 commit, creates the GitHub Release (never draft/prerelease, marked latest — required for
 electron-updater's GitHub provider) with `latest-linux.yml` uploaded last, and attests build
@@ -150,7 +150,7 @@ provenance. `changelog` then finalizes `CHANGELOG.md`'s `[Unreleased]` section o
 `UPSTREAM_BOT_TOKEN` PAT, since a PR opened with the workflow's own `GITHUB_TOKEN` never triggers
 `ci.yml` and so could never satisfy `ci-status`).
 
-`upstream-check.yml` is the nightly bot (04:17 UTC), driven by `scripts/upstream-check.ts`: it
+`upstream-check.yml` is the upstream bot (manual `workflow_dispatch` only), driven by `scripts/upstream-check.ts`: it
 compares `upstream.json` against the Windows update feed, and on a new version downloads, extracts
 and pre-flights the installer, then pushes one branch
 (`upstream/<base>/v<version>.<build>`) and opens (or updates) one PR labelled `upstream-bump` +
@@ -158,7 +158,7 @@ and pre-flights the installer, then pushes one branch
 
 ```mermaid
 flowchart TD
-    subgraph bot["upstream-check.yml (nightly)"]
+    subgraph bot["upstream-check.yml (manual)"]
         u1["Compare upstream.json to the Windows feed"] -->|new version| u2["Download, extract, pre-flight"]
         u2 --> u3["Push branch upstream/&lt;base&gt;/v&lt;version&gt;.&lt;build&gt;"]
         u3 --> u4["Open PR: labels upstream-bump + automerge"]

@@ -13,7 +13,7 @@ open PRs, but auto-merge will not fire.
 
 ## Normal flow
 
-1. **`upstream-check.yml`** runs nightly at 04:17 UTC (cron `17 4 * * *`), or on demand via
+1. **`upstream-check.yml`** runs on demand only (no schedule), via the Actions tab or
    `gh workflow run upstream-check.yml`. It compares
    `https://download.qwen.ai/windows/x64/latest.yml` against `upstream.json`. If upstream is not
    newer, it logs `Up to date` and exits — no branch, no PR, no cache write. If upstream is newer,
@@ -35,7 +35,7 @@ open PRs, but auto-merge will not fire.
    derives the tag with `npm run -s version -- --print gitTag` and checks
    `git ls-remote --tags origin refs/tags/<tag>`. If the tag already exists, the run ends with
    `::notice::Tag <tag> already exists; nothing to release` and nothing else runs — this is what
-   makes docs-only merges, Dependabot bumps, and the workflow's own CHANGELOG PR (step 4 below) a
+   makes docs-only merges and the workflow's own CHANGELOG PR (step 4 below) a
    no-op. If the tag is new, `build-and-test` (the same reusable workflow `ci.yml` uses) rebuilds
    and runs the full install matrix, and `publish` downloads those exact artifacts, writes
    `dist/SHA256SUMS`, renders release notes from the CHANGELOG's `Unreleased` section
@@ -97,7 +97,7 @@ for example if the feed is unreachable from Actions, or to release faster than t
 - Replace `tests/fixtures/app-pristine/out/main/index.js` with the new upstream file's
   `out/main/index.js` (extract it the same way the bot does — see `npm run patches:dev` below).
   This fixture is what `npm run test:unit` and the bot's own pre-flight checks diff patches
-  against; leaving it stale means the next `test:unit` run (and the next nightly bot run) checks
+  against; leaving it stale means the next `test:unit` run (and the next bot run) checks
   patches against the wrong upstream.
 
 Also verify the patches still apply (`npm run patches:dev`) and that the embedded Electron
